@@ -12,10 +12,10 @@
   resolved "https://registry.yarnpkg.com/@types/jasmine/-/jasmine-2.8.17.tgz#65fa3be377126253f6c7988b365dfc78d62d536e"
   integrity sha512-lXmY2lBjE38ASvP7ah38yZwXCdc7DTCKhHqx4J3WGNiVzp134U0BD9VKdL5x9q9AAfhnpJeQr4owL6ZOXhOpfA==
 
-"@types/node@^10.15.3":
-  version "10.17.27"
-  resolved "https://registry.yarnpkg.com/@types/node/-/node-10.17.27.tgz#391cb391c75646c8ad2a7b6ed3bbcee52d1bdf19"
-  integrity sha512-J0oqm9ZfAXaPdwNXMMgAhylw5fhmXkToJd06vuDUSAgEDZ/n/69/69UmyBZbc+zT34UnShuDSBqvim3SPnozJg==
+"@types/node@^17.0.36":
+  version "17.0.45"
+  resolved "https://registry.yarnpkg.com/@types/node/-/node-17.0.45.tgz#2c0fafd78705e7a18b7906b5201a522719dc5190"
+  integrity sha512-w+tIMs3rq2afQdsPJlODhoUEKzFP1ayaoyl1CcnwtIlsVe7K7bA1NGm4s3PraqTLlXnbIN84zuBlxBWo1u9BLw==
 
 balanced-match@^1.0.0:
   version "1.0.0"
