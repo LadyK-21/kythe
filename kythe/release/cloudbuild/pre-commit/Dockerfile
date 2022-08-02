@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # docker build -t gcr.io/kythe-repo/pre-commit .
-FROM ubuntu:focal
+FROM ubuntu:20.04
 
 RUN apt-get update \
         && apt-get upgrade -y \
