@@ -23,17 +23,18 @@
 //   textproto_extractor foo.pbtxt
 //   textproto_extractor foo.pbtxt -- --proto_path dir/with/proto/deps
 
+#include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/flags/usage.h"
-#include "absl/strings/match.h"
-#include "absl/strings/str_cat.h"
-#include "absl/strings/str_split.h"
-#include "glog/logging.h"
+#include "absl/log/check.h"
+#include "absl/strings/string_view.h"
 #include "kythe/cxx/common/file_utils.h"
+#include "kythe/cxx/common/index_writer.h"
 #include "kythe/cxx/common/init.h"
 #include "kythe/cxx/common/kzip_writer.h"
 #include "kythe/cxx/common/path_utils.h"
@@ -41,12 +42,16 @@
 #include "kythe/cxx/extractor/textproto/textproto_schema.h"
 #include "kythe/cxx/indexer/proto/search_path.h"
 #include "kythe/proto/analysis.pb.h"
+#include "kythe/proto/storage.pb.h"
 
 ABSL_FLAG(std::string, proto_message, "",
           "namespace-qualified message name for the textproto.");
 ABSL_FLAG(std::vector<std::string>, proto_files, {},
           "A comma-separated list of proto files needed to fully define "
           "the textproto's schema.");
+ABSL_FLAG(std::string, record_separator, "",
+          "Delimitates each record within a file. Presence of this"
+          "indicates this is a recordio textformat file.");
 
 namespace kythe {
 namespace lang_textproto {
@@ -58,8 +63,6 @@ IndexWriter OpenKzipWriterOrDie(absl::string_view path) {
   CHECK(writer.ok()) << "Failed to open KzipWriter: " << writer.status();
   return std::move(*writer);
 }
-
-}  // namespace
 
 int main(int argc, char* argv[]) {
   kythe::InitializeProgram(argv[0]);
@@ -80,7 +83,8 @@ Examples:
   export KYTHE_OUTPUT_FILE=foo.kzip
   textproto_extractor foo.pbtxt
   textproto_extractor foo.pbtxt --proto_message MyMessage --proto_files foo.proto,bar.proto
-  textproto_extractor foo.pbtxt --proto_message MyMessage --proto_files foo.proto -- --proto_path dir/with/my/deps")");
+  textproto_extractor foo.pbtxt --proto_message MyMessage --proto_files foo.proto -- --proto_path dir/with/my/deps
+  textproto_extractor foo.recordiotxt --proto_message MyMessage --proto_files foo.proto --record_separator @@@ -- --proto_path dir/with/my/deps")");
   std::vector<char*> remain = absl::ParseCommandLine(argc, argv);
   std::vector<std::string> final_args(remain.begin() + 1, remain.end());
 
@@ -150,6 +154,11 @@ Examples:
   compilation.mutable_unit()->add_argument(textproto_filename);
   compilation.mutable_unit()->add_argument("--proto_message");
   compilation.mutable_unit()->add_argument(std::string(schema.proto_message));
+  std::string record_separator = absl::GetFlag(FLAGS_record_separator);
+  if (!record_separator.empty()) {
+    compilation.mutable_unit()->add_argument("--record_separator");
+    compilation.mutable_unit()->add_argument(record_separator);
+  }
   // Add protoc args.
   if (!proto_extractor.path_substitutions.empty()) {
     compilation.mutable_unit()->add_argument("--");
@@ -184,6 +193,7 @@ Examples:
   return 0;
 }
 
+}  // namespace
 }  // namespace lang_textproto
 }  // namespace kythe
 

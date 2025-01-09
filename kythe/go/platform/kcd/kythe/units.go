@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 
@@ -63,6 +64,7 @@ func (u Unit) Index() kcd.Index {
 		v = new(spb.VName)
 	}
 	idx := kcd.Index{
+		Corpus:   v.Corpus,
 		Language: v.Language,
 		Output:   u.Proto.OutputKey,
 		Sources:  u.Proto.SourceFile,
@@ -80,6 +82,29 @@ func (u Unit) Index() kcd.Index {
 		}
 	}
 	return idx
+}
+
+// LookupVName satisfies part of the kcd.Unit interface.
+func (u Unit) LookupVName(inputPath string) *spb.VName {
+	inputPath = u.pathKey(inputPath)
+	for _, ri := range u.Proto.RequiredInput {
+		if ri.Info == nil {
+			continue
+		}
+		qp := u.pathKey(ri.Info.GetPath())
+		if qp == inputPath {
+			v := proto.Clone(ri.GetVName()).(*spb.VName)
+			if v.GetCorpus() == "" {
+				v.Corpus = u.Proto.GetVName().GetCorpus()
+				v.Root = u.Proto.GetVName().GetRoot()
+			}
+			if v.GetPath() == "" {
+				v.Path = inputPath
+			}
+			return v
+		}
+	}
+	return nil
 }
 
 // Canonicalize satisfies part of the kcd.Unit interface.  It orders required
@@ -129,9 +154,31 @@ func (u Unit) Digest() string {
 	return hex.EncodeToString(sha.Sum(nil)[:])
 }
 
+// pathKey returns a cleaned path, relative to the compilation working directory.
+func (u Unit) pathKey(inputPath string) string {
+	root := path.Clean(u.Proto.GetWorkingDirectory())
+	if root == "" {
+		root = "/"
+	}
+
+	if path.IsAbs(inputPath) {
+		inputPath = path.Clean(inputPath)
+	} else {
+		inputPath = path.Join(root, inputPath)
+	}
+
+	var prefix string
+	if root == "/" {
+		prefix = root
+	} else {
+		prefix = root + "/"
+	}
+	return strings.TrimPrefix(inputPath, prefix)
+}
+
 // ConvertUnit reports whether v can be converted to a Kythe kcd.Unit, and if
 // so returns the appropriate implementation.
-func ConvertUnit(v interface{}) (kcd.Unit, bool) {
+func ConvertUnit(v any) (kcd.Unit, bool) {
 	if u, ok := v.(*apb.CompilationUnit); ok {
 		return Unit{u}, true
 	}

@@ -17,20 +17,21 @@
 // Package filetree implements a lookup table for files in a tree structure.
 //
 // Table format:
-//   dirs:<corpus>\n<root>\n<path> -> srvpb.FileDirectory
-//   dirs:corpusRoots              -> srvpb.CorpusRoots
+//
+//	dirs:<corpus>\n<root>\n<path> -> srvpb.FileDirectory
+//	dirs:corpusRoots              -> srvpb.CorpusRoots
 package filetree // import "kythe.io/kythe/go/serving/filetree"
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strings"
 
 	"kythe.io/kythe/go/storage/table"
 	"kythe.io/kythe/go/util/kytheuri"
+	"kythe.io/kythe/go/util/log"
 
 	ftpb "kythe.io/kythe/proto/filetree_go_proto"
 	srvpb "kythe.io/kythe/proto/serving_go_proto"
@@ -77,9 +78,14 @@ func (t *Table) Directory(ctx context.Context, req *ftpb.DirectoryRequest) (*ftp
 	}
 	entries := make([]*ftpb.DirectoryReply_Entry, 0, len(d.Entry))
 	for _, e := range d.Entry {
+		if !req.GetIncludeFilesMissingText() && e.GetMissingText() {
+			continue
+		}
 		re := &ftpb.DirectoryReply_Entry{
 			Name:        e.Name,
 			BuildConfig: e.BuildConfig,
+			Generated:   e.GetGenerated(),
+			MissingText: e.GetMissingText(),
 		}
 		switch e.Kind {
 		case srvpb.FileDirectory_FILE:
@@ -87,7 +93,7 @@ func (t *Table) Directory(ctx context.Context, req *ftpb.DirectoryRequest) (*ftp
 		case srvpb.FileDirectory_DIRECTORY:
 			re.Kind = ftpb.DirectoryReply_DIRECTORY
 		default:
-			log.Printf("WARNING: unknown directory entry type: %T", e)
+			log.WarningContextf(ctx, "unknown directory entry type: %T", e)
 			continue
 		}
 		entries = append(entries, re)
@@ -115,8 +121,9 @@ func parseLegacyEntries(entries []*ftpb.DirectoryReply_Entry, kind ftpb.Director
 			return nil, fmt.Errorf("invalid serving data: %v", err)
 		}
 		entries = append(entries, &ftpb.DirectoryReply_Entry{
-			Kind: kind,
-			Name: filepath.Base(uri.Path),
+			Kind:      kind,
+			Name:      filepath.Base(uri.Path),
+			Generated: uri.Root != "",
 		})
 	}
 	return entries, nil

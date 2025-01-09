@@ -1,5 +1,5 @@
-load("@rules_python//python:defs.bzl", "py_binary")
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load("@rules_python//python:defs.bzl", "py_binary")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -20,20 +20,33 @@ bzl_library(
     srcs = ["cc_indexer_test.bzl"],
     deps = [
         ":verifier_test_bzl",
+        "//kythe/cxx/extractor:toolchain_bzl",
+        "//tools/cpp:toolchain_utils",
         "@bazel_skylib//lib:paths",
         "@bazel_skylib//lib:shell",
+        "@rules_proto//proto:defs",
     ],
 )
 
 bzl_library(
     name = "java_verifier_test_bzl",
     srcs = ["java_verifier_test.bzl"],
-    deps = [":verifier_test_bzl"],
+    deps = [
+        ":verifier_test_bzl",
+        "@rules_java//java:rules",
+    ],
 )
 
 bzl_library(
     name = "verifier_test_bzl",
     srcs = ["verifier_test.bzl"],
+    deps = [":verifier_test_impl_bzl"],
+)
+
+bzl_library(
+    name = "verifier_test_impl_bzl",
+    srcs = ["verifier_test_impl.bzl"],
+    visibility = ["//visibility:private"],
     deps = [
         "@bazel_skylib//lib:shell",
     ],
@@ -42,19 +55,13 @@ bzl_library(
 bzl_library(
     name = "jvm_verifier_test_bzl",
     srcs = ["jvm_verifier_test.bzl"],
-    deps = [":verifier_test_bzl"],
+    deps = [
+        ":verifier_test_bzl",
+        "@rules_java//java:rules",
+    ],
 )
 
 bzl_library(
     name = "kzip_archive_bzl",
     srcs = ["kzip_archive.bzl"],
-)
-
-bzl_library(
-    name = "rust_indexer_test_bzl",
-    srcs = ["rust_indexer_test.bzl"],
-    deps = [
-        ":verifier_test_bzl",
-        "@bazel_skylib//lib:paths",
-    ],
 )

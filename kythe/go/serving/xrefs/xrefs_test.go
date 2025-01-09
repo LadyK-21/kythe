@@ -19,10 +19,17 @@ package xrefs
 import (
 	"bytes"
 	"context"
+	"flag"
+	"math"
+	"math/rand"
+	"reflect"
 	"sort"
 	"strconv"
 	"testing"
+	"testing/quick"
 
+	"bitbucket.org/creachadair/stringset"
+	"github.com/google/codesearch/index"
 	"kythe.io/kythe/go/services/xrefs"
 	"kythe.io/kythe/go/storage/table"
 	"kythe.io/kythe/go/test/testutil"
@@ -356,35 +363,73 @@ var (
 			Group: []*srvpb.PagedCrossReferences_Group{{
 				BuildConfig: "testConfig",
 				Kind:        "%/kythe/edge/defines/binding",
-				Anchor: []*srvpb.ExpandedAnchor{{
-					Ticket:             "kythe://c?lang=otpl?path=/a/path#27-33",
-					BuildConfiguration: "testConfig",
+				ScopedReference: []*srvpb.PagedCrossReferences_ScopedReference{{
+					SemanticScope: "kythe://someCorpus?lang=otpl#scope",
+					Scope: &srvpb.ExpandedAnchor{
+						Ticket:             "kythe://c?lang=otpl?path=/a/path#scope",
+						BuildConfiguration: "testConfig",
+						Kind:               "/kythe/edge/defines/binding",
 
-					Span: &cpb.Span{
-						Start: &cpb.Point{
-							ByteOffset:   27,
-							LineNumber:   2,
-							ColumnOffset: 10,
+						Span: &cpb.Span{
+							Start: &cpb.Point{
+								ByteOffset:   27,
+								LineNumber:   2,
+								ColumnOffset: 10,
+							},
+							End: &cpb.Point{
+								ByteOffset:   33,
+								LineNumber:   3,
+								ColumnOffset: 5,
+							},
 						},
-						End: &cpb.Point{
-							ByteOffset:   33,
-							LineNumber:   3,
-							ColumnOffset: 5,
-						},
-					},
 
-					SnippetSpan: &cpb.Span{
-						Start: &cpb.Point{
-							ByteOffset: 17,
-							LineNumber: 2,
+						SnippetSpan: &cpb.Span{
+							Start: &cpb.Point{
+								ByteOffset: 17,
+								LineNumber: 2,
+							},
+							End: &cpb.Point{
+								ByteOffset:   27,
+								LineNumber:   2,
+								ColumnOffset: 10,
+							},
 						},
-						End: &cpb.Point{
-							ByteOffset:   27,
-							LineNumber:   2,
-							ColumnOffset: 10,
-						},
+						Snippet: "here and  ",
 					},
-					Snippet: "here and  ",
+					MarkedSource: &cpb.MarkedSource{
+						Kind:    cpb.MarkedSource_IDENTIFIER,
+						PreText: "Scope",
+					},
+					Reference: []*srvpb.ExpandedAnchor{{
+						Ticket:             "kythe://c?lang=otpl?path=/a/path#27-33",
+						BuildConfiguration: "testConfig",
+
+						Span: &cpb.Span{
+							Start: &cpb.Point{
+								ByteOffset:   27,
+								LineNumber:   2,
+								ColumnOffset: 10,
+							},
+							End: &cpb.Point{
+								ByteOffset:   33,
+								LineNumber:   3,
+								ColumnOffset: 5,
+							},
+						},
+
+						SnippetSpan: &cpb.Span{
+							Start: &cpb.Point{
+								ByteOffset: 17,
+								LineNumber: 2,
+							},
+							End: &cpb.Point{
+								ByteOffset:   27,
+								LineNumber:   2,
+								ColumnOffset: 10,
+							},
+						},
+						Snippet: "here and  ",
+					}},
 				}},
 			}},
 			PageIndex: []*srvpb.PagedCrossReferences_PageIndex{{
@@ -680,7 +725,7 @@ func TestDecorationsRefs(t *testing.T) {
 	})
 	testutil.Fatalf(t, "DecorationsRequest error: %v", err)
 
-	if len(reply.SourceText) != 0 {
+	if reply.SourceText != nil {
 		t.Errorf("Unexpected source text: %q", string(reply.SourceText))
 	}
 	if reply.Encoding != "" {
@@ -867,7 +912,7 @@ func TestDecorationsDirtyBuffer(t *testing.T) {
 	})
 	testutil.Fatalf(t, "DecorationsRequest error: %v", err)
 
-	if len(reply.SourceText) != 0 {
+	if reply.SourceText != nil {
 		t.Errorf("Unexpected source text: %q", string(reply.SourceText))
 	}
 	if reply.Encoding != "" {
@@ -1286,7 +1331,479 @@ func TestCrossReferences(t *testing.T) {
 	if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 		Definitions: 1,
 		References:  2,
+		RefEdgeToCount: map[string]int64{
+			"/kythe/edge/ref": 2,
+		},
 	}, reply.Total); err != nil {
+		t.Error(err)
+	}
+	wantFiltered := &xpb.CrossReferencesReply_Total{}
+	if err := testutil.DeepEqual(wantFiltered, reply.Filtered); err != nil {
+		t.Error(err)
+	}
+
+	xr := reply.CrossReferences[ticket]
+	if xr == nil {
+		t.Fatalf("Missing expected CrossReferences; found: %#v", reply)
+	}
+	sort.Sort(byOffset(xr.Reference))
+
+	if err := testutil.DeepEqual(expected, xr); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCrossReferencesScoped(t *testing.T) {
+	ticket := "kythe://someCorpus?lang=otpl#signature"
+
+	st := tbl.Construct(t)
+	reply, err := st.CrossReferences(ctx, &xpb.CrossReferencesRequest{
+		Ticket:         []string{ticket},
+		DefinitionKind: xpb.CrossReferencesRequest_BINDING_DEFINITIONS,
+		ReferenceKind:  xpb.CrossReferencesRequest_ALL_REFERENCES,
+		Snippets:       xpb.SnippetsKind_DEFAULT,
+		SemanticScopes: true,
+	})
+	testutil.Fatalf(t, "CrossReferencesRequest error: %v", err)
+
+	expected := &xpb.CrossReferencesReply_CrossReferenceSet{
+		Ticket: ticket,
+
+		Reference: []*xpb.CrossReferencesReply_RelatedAnchor{{Anchor: &xpb.Anchor{
+			Ticket: "kythe:?path=some/utf16/file#0-4",
+			Kind:   "/kythe/edge/ref",
+			Parent: "kythe:?path=some/utf16/file",
+
+			Span: &cpb.Span{
+				Start: &cpb.Point{LineNumber: 1},
+				End:   &cpb.Point{ByteOffset: 4, LineNumber: 1, ColumnOffset: 4},
+			},
+
+			SnippetSpan: &cpb.Span{
+				Start: &cpb.Point{
+					LineNumber: 1,
+				},
+				End: &cpb.Point{
+					ByteOffset:   28,
+					LineNumber:   1,
+					ColumnOffset: 28,
+				},
+			},
+			Snippet: "これはいくつかのテキストです",
+		}}, {Anchor: &xpb.Anchor{
+			Ticket: "kythe://c?lang=otpl?path=/a/path#51-55",
+			Kind:   "/kythe/edge/ref",
+			Parent: "kythe://c?path=/a/path",
+
+			Span: &cpb.Span{
+				Start: &cpb.Point{
+					ByteOffset:   51,
+					LineNumber:   4,
+					ColumnOffset: 15,
+				},
+				End: &cpb.Point{
+					ByteOffset:   55,
+					LineNumber:   5,
+					ColumnOffset: 2,
+				},
+			},
+
+			SnippetSpan: &cpb.Span{
+				Start: &cpb.Point{
+					ByteOffset: 36,
+					LineNumber: 4,
+				},
+				End: &cpb.Point{
+					ByteOffset:   52,
+					LineNumber:   4,
+					ColumnOffset: 16,
+				},
+			},
+			Snippet: "some random text",
+		}}},
+
+		Definition: []*xpb.CrossReferencesReply_RelatedAnchor{{
+			Ticket: "kythe://someCorpus?lang=otpl#scope",
+			MarkedSource: &cpb.MarkedSource{
+				Kind:    cpb.MarkedSource_IDENTIFIER,
+				PreText: "Scope",
+			},
+			Anchor: &xpb.Anchor{
+				Ticket:      "kythe://c?lang=otpl?path=/a/path#scope",
+				Kind:        "/kythe/edge/defines/binding",
+				Parent:      "kythe://c?path=/a/path",
+				BuildConfig: "testConfig",
+
+				Span: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+					End: &cpb.Point{
+						ByteOffset:   33,
+						LineNumber:   3,
+						ColumnOffset: 5,
+					},
+				},
+
+				SnippetSpan: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset: 17,
+						LineNumber: 2,
+					},
+					End: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+				},
+				Snippet: "here and  ",
+			},
+			Site: []*xpb.Anchor{{
+				Ticket:      "kythe://c?lang=otpl?path=/a/path#27-33",
+				Kind:        "/kythe/edge/defines/binding",
+				Parent:      "kythe://c?path=/a/path",
+				BuildConfig: "testConfig",
+
+				Span: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+					End: &cpb.Point{
+						ByteOffset:   33,
+						LineNumber:   3,
+						ColumnOffset: 5,
+					},
+				},
+
+				SnippetSpan: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset: 17,
+						LineNumber: 2,
+					},
+					End: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+				},
+				Snippet: "here and  ",
+			}},
+		}},
+	}
+
+	if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
+		Definitions: 1,
+		References:  2,
+		RefEdgeToCount: map[string]int64{
+			"/kythe/edge/ref": 2,
+		},
+	}, reply.Total); err != nil {
+		t.Error(err)
+	}
+	wantFiltered := &xpb.CrossReferencesReply_Total{}
+	if err := testutil.DeepEqual(wantFiltered, reply.Filtered); err != nil {
+		t.Error(err)
+	}
+
+	xr := reply.CrossReferences[ticket]
+	if xr == nil {
+		t.Fatalf("Missing expected CrossReferences; found: %#v", reply)
+	}
+	sort.Sort(byOffset(xr.Reference))
+
+	if err := testutil.DeepEqual(expected, xr); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCrossReferencesPaging(t *testing.T) {
+	ticket := "kythe://someCorpus?lang=otpl#signature"
+
+	st := tbl.Construct(t)
+	req := &xpb.CrossReferencesRequest{
+		Ticket:         []string{ticket},
+		DefinitionKind: xpb.CrossReferencesRequest_BINDING_DEFINITIONS,
+		ReferenceKind:  xpb.CrossReferencesRequest_ALL_REFERENCES,
+		Snippets:       xpb.SnippetsKind_DEFAULT,
+		SemanticScopes: true,
+		PageSize:       1,
+	}
+
+	var anchors []*xpb.CrossReferencesReply_RelatedAnchor
+	for {
+		reply, err := st.CrossReferences(ctx, req)
+		testutil.Fatalf(t, "CrossReferencesRequest error: %v", err)
+		xr := reply.GetCrossReferences()[ticket]
+		anchors = append(anchors, xr.GetReference()...)
+		anchors = append(anchors, xr.GetDefinition()...)
+		anchors = append(anchors, xr.GetDeclaration()...)
+		anchors = append(anchors, xr.GetCaller()...)
+
+		req.PageToken = reply.GetNextPageToken()
+		if req.PageToken == "" {
+			break
+		}
+		t.Logf("NextPageToken: %s", req.PageToken)
+	}
+
+	expected := []*xpb.CrossReferencesReply_RelatedAnchor{
+		{
+			Ticket: "kythe://someCorpus?lang=otpl#scope",
+			MarkedSource: &cpb.MarkedSource{
+				Kind:    cpb.MarkedSource_IDENTIFIER,
+				PreText: "Scope",
+			},
+			Anchor: &xpb.Anchor{
+				Ticket:      "kythe://c?lang=otpl?path=/a/path#scope",
+				Kind:        "/kythe/edge/defines/binding",
+				Parent:      "kythe://c?path=/a/path",
+				BuildConfig: "testConfig",
+
+				Span: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+					End: &cpb.Point{
+						ByteOffset:   33,
+						LineNumber:   3,
+						ColumnOffset: 5,
+					},
+				},
+
+				SnippetSpan: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset: 17,
+						LineNumber: 2,
+					},
+					End: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+				},
+				Snippet: "here and  ",
+			},
+			Site: []*xpb.Anchor{{
+				Ticket:      "kythe://c?lang=otpl?path=/a/path#27-33",
+				Kind:        "/kythe/edge/defines/binding",
+				Parent:      "kythe://c?path=/a/path",
+				BuildConfig: "testConfig",
+
+				Span: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+					End: &cpb.Point{
+						ByteOffset:   33,
+						LineNumber:   3,
+						ColumnOffset: 5,
+					},
+				},
+
+				SnippetSpan: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset: 17,
+						LineNumber: 2,
+					},
+					End: &cpb.Point{
+						ByteOffset:   27,
+						LineNumber:   2,
+						ColumnOffset: 10,
+					},
+				},
+				Snippet: "here and  ",
+			}},
+		},
+		{
+			Anchor: &xpb.Anchor{
+				Ticket: "kythe:?path=some/utf16/file#0-4",
+				Kind:   "/kythe/edge/ref",
+				Parent: "kythe:?path=some/utf16/file",
+
+				Span: &cpb.Span{
+					Start: &cpb.Point{LineNumber: 1},
+					End:   &cpb.Point{ByteOffset: 4, LineNumber: 1, ColumnOffset: 4},
+				},
+
+				SnippetSpan: &cpb.Span{
+					Start: &cpb.Point{
+						LineNumber: 1,
+					},
+					End: &cpb.Point{
+						ByteOffset:   28,
+						LineNumber:   1,
+						ColumnOffset: 28,
+					},
+				},
+				Snippet: "これはいくつかのテキストです",
+			},
+		},
+		{
+			Anchor: &xpb.Anchor{
+				Ticket: "kythe://c?lang=otpl?path=/a/path#51-55",
+				Kind:   "/kythe/edge/ref",
+				Parent: "kythe://c?path=/a/path",
+
+				Span: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset:   51,
+						LineNumber:   4,
+						ColumnOffset: 15,
+					},
+					End: &cpb.Point{
+						ByteOffset:   55,
+						LineNumber:   5,
+						ColumnOffset: 2,
+					},
+				},
+
+				SnippetSpan: &cpb.Span{
+					Start: &cpb.Point{
+						ByteOffset: 36,
+						LineNumber: 4,
+					},
+					End: &cpb.Point{
+						ByteOffset:   52,
+						LineNumber:   4,
+						ColumnOffset: 16,
+					},
+				},
+				Snippet: "some random text",
+			},
+		},
+	}
+
+	if err := testutil.DeepEqual(expected, anchors); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCrossReferencesReadAhead(t *testing.T) {
+	const flagName = "page_read_ahead"
+	val := flag.Lookup(flagName).Value.String()
+	testutil.Fatalf(t, "flag.Set: %v", flag.Set(flagName, "4"))
+	defer flag.Set(flagName, val)
+
+	ticket := "kythe://someCorpus?lang=otpl#signature"
+
+	st := tbl.Construct(t)
+	reply, err := st.CrossReferences(ctx, &xpb.CrossReferencesRequest{
+		Ticket:         []string{ticket},
+		DefinitionKind: xpb.CrossReferencesRequest_BINDING_DEFINITIONS,
+		ReferenceKind:  xpb.CrossReferencesRequest_ALL_REFERENCES,
+		Snippets:       xpb.SnippetsKind_DEFAULT,
+	})
+	testutil.Fatalf(t, "CrossReferencesRequest error: %v", err)
+
+	expected := &xpb.CrossReferencesReply_CrossReferenceSet{
+		Ticket: ticket,
+
+		Reference: []*xpb.CrossReferencesReply_RelatedAnchor{{Anchor: &xpb.Anchor{
+			Ticket: "kythe:?path=some/utf16/file#0-4",
+			Kind:   "/kythe/edge/ref",
+			Parent: "kythe:?path=some/utf16/file",
+
+			Span: &cpb.Span{
+				Start: &cpb.Point{LineNumber: 1},
+				End:   &cpb.Point{ByteOffset: 4, LineNumber: 1, ColumnOffset: 4},
+			},
+
+			SnippetSpan: &cpb.Span{
+				Start: &cpb.Point{
+					LineNumber: 1,
+				},
+				End: &cpb.Point{
+					ByteOffset:   28,
+					LineNumber:   1,
+					ColumnOffset: 28,
+				},
+			},
+			Snippet: "これはいくつかのテキストです",
+		}}, {Anchor: &xpb.Anchor{
+			Ticket: "kythe://c?lang=otpl?path=/a/path#51-55",
+			Kind:   "/kythe/edge/ref",
+			Parent: "kythe://c?path=/a/path",
+
+			Span: &cpb.Span{
+				Start: &cpb.Point{
+					ByteOffset:   51,
+					LineNumber:   4,
+					ColumnOffset: 15,
+				},
+				End: &cpb.Point{
+					ByteOffset:   55,
+					LineNumber:   5,
+					ColumnOffset: 2,
+				},
+			},
+
+			SnippetSpan: &cpb.Span{
+				Start: &cpb.Point{
+					ByteOffset: 36,
+					LineNumber: 4,
+				},
+				End: &cpb.Point{
+					ByteOffset:   52,
+					LineNumber:   4,
+					ColumnOffset: 16,
+				},
+			},
+			Snippet: "some random text",
+		}}},
+
+		Definition: []*xpb.CrossReferencesReply_RelatedAnchor{{Anchor: &xpb.Anchor{
+			Ticket:      "kythe://c?lang=otpl?path=/a/path#27-33",
+			Kind:        "/kythe/edge/defines/binding",
+			Parent:      "kythe://c?path=/a/path",
+			BuildConfig: "testConfig",
+
+			Span: &cpb.Span{
+				Start: &cpb.Point{
+					ByteOffset:   27,
+					LineNumber:   2,
+					ColumnOffset: 10,
+				},
+				End: &cpb.Point{
+					ByteOffset:   33,
+					LineNumber:   3,
+					ColumnOffset: 5,
+				},
+			},
+
+			SnippetSpan: &cpb.Span{
+				Start: &cpb.Point{
+					ByteOffset: 17,
+					LineNumber: 2,
+				},
+				End: &cpb.Point{
+					ByteOffset:   27,
+					LineNumber:   2,
+					ColumnOffset: 10,
+				},
+			},
+			Snippet: "here and  ",
+		}}},
+	}
+
+	if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
+		Definitions: 1,
+		References:  2,
+		RefEdgeToCount: map[string]int64{
+			"/kythe/edge/ref": 2,
+		},
+	}, reply.Total); err != nil {
+		t.Error(err)
+	}
+	wantFiltered := &xpb.CrossReferencesReply_Total{}
+	if err := testutil.DeepEqual(wantFiltered, reply.Filtered); err != nil {
 		t.Error(err)
 	}
 
@@ -1424,6 +1941,46 @@ func TestDecorationsPatching(t *testing.T) {
 	}
 }
 
+func TestPatchingError(t *testing.T) {
+	st := tbl.Construct(t)
+
+	// An error when creating a patcher should not result in an overall error.
+	st.MakePatcher = func(ctx context.Context, ws *xpb.Workspace) (MultiFilePatcher, error) {
+		return nil, context.Canceled
+	}
+
+	_, err := st.Decorations(ctx, &xpb.DecorationsRequest{
+		Location:          &xpb.Location{Ticket: "kythe://corpus?path=file/infos"},
+		References:        true,
+		TargetDefinitions: true,
+
+		Workspace:             &xpb.Workspace{Uri: "test:"},
+		PatchAgainstWorkspace: true,
+	})
+	testutil.Fatalf(t, "DecorationsRequest error: %v", err)
+
+	_, err = st.CrossReferences(ctx, &xpb.CrossReferencesRequest{
+		Ticket:         []string{"kythe://someCorpus?lang=otpl#signature"},
+		DefinitionKind: xpb.CrossReferencesRequest_BINDING_DEFINITIONS,
+		ReferenceKind:  xpb.CrossReferencesRequest_ALL_REFERENCES,
+		Snippets:       xpb.SnippetsKind_DEFAULT,
+
+		Workspace:             &xpb.Workspace{Uri: "test:"},
+		PatchAgainstWorkspace: true,
+	})
+	testutil.Fatalf(t, "CrossReferencesRequest error: %v", err)
+
+	_, err = st.Documentation(ctx, &xpb.DocumentationRequest{
+		Ticket: []string{"kythe:#documented"},
+
+		IncludeChildren: true,
+
+		Workspace:             &xpb.Workspace{Uri: "test:"},
+		PatchAgainstWorkspace: true,
+	})
+	testutil.Fatalf(t, "DocumentationRequest error: %v", err)
+}
+
 func TestCrossReferencesPatching(t *testing.T) {
 	ticket := "kythe://someCorpus?lang=otpl#signature"
 
@@ -1536,7 +2093,7 @@ func TestCrossReferencesPatching(t *testing.T) {
 			Snippet: "here and  ",
 		}}},
 	}
-	expectedInfos := []*srvpb.FileInfo{}
+	var expectedInfos []*srvpb.FileInfo
 
 	xr := reply.CrossReferences[ticket]
 	if xr == nil {
@@ -1643,7 +2200,18 @@ filter: {
 	if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 		Definitions: 1,
 		References:  1,
+		RefEdgeToCount: map[string]int64{
+			"/kythe/edge/ref": 1,
+		},
 	}, reply.Total); err != nil {
+		t.Error(err)
+	}
+	if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
+		References: 1,
+		RefEdgeToCount: map[string]int64{
+			"/kythe/edge/ref": 1,
+		},
+	}, reply.Filtered); err != nil {
 		t.Error(err)
 	}
 
@@ -1711,6 +2279,9 @@ func TestCrossReferences_BuildConfigRefs(t *testing.T) {
 	if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 		Definitions: 1,
 	}, reply.Total); err != nil {
+		t.Error(err)
+	}
+	if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{}, reply.Filtered); err != nil {
 		t.Error(err)
 	}
 
@@ -1924,6 +2495,9 @@ func TestCrossReferencesIndirection(t *testing.T) {
 
 		if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 			References: 1,
+			RefEdgeToCount: map[string]int64{
+				"/kythe/edge/ref": 1,
+			},
 		}, reply.Total); err != nil {
 			t.Error(err)
 		}
@@ -1990,6 +2564,9 @@ func TestCrossReferencesIndirection(t *testing.T) {
 
 		if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 			References: 3,
+			RefEdgeToCount: map[string]int64{
+				"/kythe/edge/ref": 3,
+			},
 		}, reply.Total); err != nil {
 			t.Error(err)
 		}
@@ -2059,6 +2636,9 @@ func TestCrossReferencesIndirection(t *testing.T) {
 
 		if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 			References: 3,
+			RefEdgeToCount: map[string]int64{
+				"/kythe/edge/ref": 3,
+			},
 		}, reply.Total); err != nil {
 			t.Error(err)
 		}
@@ -2111,6 +2691,9 @@ func TestCrossReferencesIndirection(t *testing.T) {
 
 		if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 			References: 2,
+			RefEdgeToCount: map[string]int64{
+				"/kythe/edge/ref": 2,
+			},
 		}, reply.Total); err != nil {
 			t.Error(err)
 		}
@@ -2189,6 +2772,9 @@ func TestCrossReferencesIndirection(t *testing.T) {
 
 		if err := testutil.DeepEqual(&xpb.CrossReferencesReply_Total{
 			References: 4,
+			RefEdgeToCount: map[string]int64{
+				"/kythe/edge/ref": 4,
+			},
 		}, reply.Total); err != nil {
 			t.Error(err)
 		}
@@ -2279,6 +2865,7 @@ func TestCrossReferencesOverrideCallers(t *testing.T) {
 				Parent: "kythe:?path=someFile",
 			}},
 		}, {
+			Speculative: true,
 			Anchor: &xpb.Anchor{
 				Ticket: "kythe:?path=someFile#someOverrideCallerAnchor1",
 				Parent: "kythe:?path=someFile",
@@ -2290,6 +2877,7 @@ func TestCrossReferencesOverrideCallers(t *testing.T) {
 				Span:   arbitrarySpan,
 			}},
 		}, {
+			Speculative: true,
 			Anchor: &xpb.Anchor{
 				Ticket: "kythe:?path=someFile#someOverrideCallerAnchor2",
 				Parent: "kythe:?path=someFile",
@@ -2331,7 +2919,11 @@ func TestCrossReferencesRevisions(t *testing.T) {
 	expected := &xpb.CrossReferencesReply{
 		Total: &xpb.CrossReferencesReply_Total{
 			References: 1,
+			RefEdgeToCount: map[string]int64{
+				"/kythe/edge/ref": 1,
+			},
 		},
+		Filtered: &xpb.CrossReferencesReply_Total{},
 		CrossReferences: map[string]*xpb.CrossReferencesReply_CrossReferenceSet{
 			ticket: &xpb.CrossReferencesReply_CrossReferenceSet{
 				Ticket: ticket,
@@ -2618,6 +3210,133 @@ func TestDocumentationIndirection(t *testing.T) {
 	}
 }
 
+func TestPageSearchIndex(t *testing.T) {
+	set := &srvpb.PagedCrossReferences{
+		PageSearchIndex: &srvpb.PagedCrossReferences_PageSearchIndex{
+			ByCorpus: &srvpb.PagedCrossReferences_PageSearchIndex_Postings{
+				Index: map[uint32]*srvpb.PagedCrossReferences_PageSearchIndex_Pages{
+					tri("kyt"): pages(0),
+					tri("the"): pages(0, 1, 2),
+					tri("yth"): pages(0),
+					tri("oth"): pages(1),
+					tri("her"): pages(1),
+					tri("Pag"): pages(math.MaxUint32), // short-hand for all pages
+					tri("age"): pages(0, 1, 2),
+					tri("ge_"): pages(1, 2),
+				},
+			},
+			ByRoot: &srvpb.PagedCrossReferences_PageSearchIndex_Postings{
+				Index: map[uint32]*srvpb.PagedCrossReferences_PageSearchIndex_Pages{
+					tri("baz"): pages(1, 2),
+					tri("aze"): pages(1, 2),
+					tri("zel"): pages(1, 2),
+				},
+			},
+			ByPath: &srvpb.PagedCrossReferences_PageSearchIndex_Postings{
+				Index: map[uint32]*srvpb.PagedCrossReferences_PageSearchIndex_Pages{
+					tri("kyt"): pages(0),
+					tri("yth"): pages(0),
+					tri("the"): pages(0),
+					tri("he/"): pages(0),
+					tri("e/g"): pages(0),
+					tri("/go"): pages(0),
+				},
+			},
+			ByResolvedPath: &srvpb.PagedCrossReferences_PageSearchIndex_Postings{
+				Index: map[uint32]*srvpb.PagedCrossReferences_PageSearchIndex_Pages{
+					tri("the"): pages(0, 2),
+					tri("he/"): pages(0, 2),
+					tri("e/b"): pages(0, 2),
+					tri("/ba"): pages(0, 2),
+				},
+			},
+		},
+		PageIndex: []*srvpb.PagedCrossReferences_PageIndex{{
+			PageKey: "kythePage",
+		}, {
+			PageKey: "otherPage_",
+		}, {
+			PageKey: "thePage_",
+		}},
+	}
+
+	// All pages are represented by nil
+	var allPages stringset.Set
+
+	tests := []struct {
+		Filter *xpb.CorpusPathFilters
+		Keys   stringset.Set
+	}{
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kyt" }`), stringset.New("kythePage")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kythe" }`), stringset.New("kythePage")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kythe|golang" }`), stringset.New("kythePage")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "other" }`), stringset.New("otherPage_")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kythe|other" }`), stringset.New("kythePage", "otherPage_")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "Page_" }`), stringset.New("thePage_", "otherPage_")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "the" }`), allPages},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "Page" }`), allPages},
+
+		// Trigrams are separated by field
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kythe/go" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "bazel" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "the/ba" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY root: "the/ba" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY path: "the/ba" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY path: "kythe/go" }`), stringset.New("kythePage")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY path: "/go" }`), stringset.New("kythePage")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY root: "bazel" }`), stringset.New("otherPage_", "thePage_")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY resolved_path: "the/ba" }`), stringset.New("kythePage", "thePage_")},
+
+		// Merge filters
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kythe|other" } filter: { type: INCLUDE_ONLY corpus: "other" }`), stringset.New("otherPage_")},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY resolved_path: "the/ba" } filter: { type: INCLUDE_ONLY root: "bazel" }`), stringset.New("thePage_")},
+
+		// No trigrams; matches everything
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "ne" }`), allPages},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "^$" }`), allPages},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "\\.s" }`), allPages},
+
+		// Matches nothing
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "nope" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "rip" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kyther" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "kythe.+google" }`), stringset.New()},
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "golang" }`), stringset.New()},
+
+		// Exclusion filter are not handled by the search index; they match all pages.
+		{mustParseFilters(`filter: { type: EXCLUDE corpus: "kythe" }`), allPages},
+	}
+
+	for i, test := range tests {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			t.Logf("CorpusPathFilters: %s", test.Filter)
+			filter, err := compileCorpusPathFilters(test.Filter, nil)
+			testutil.Fatalf(t, "compileCorpusPathFilters: %v", err)
+			found := filter.PageSet(set)
+
+			var expected *pageSet
+			if test.Keys != nil {
+				expected = &pageSet{KeySet: test.Keys}
+			}
+			if diff := compare.ProtoDiff(expected, found); diff != "" {
+				t.Fatalf("Unexpected diff (-expected; +found):\n%s", diff)
+			}
+		})
+	}
+}
+
+func pages(ps ...uint32) *srvpb.PagedCrossReferences_PageSearchIndex_Pages {
+	if len(ps) <= 1 {
+		return &srvpb.PagedCrossReferences_PageSearchIndex_Pages{PageIndex: ps}
+	}
+	encoded := make([]uint32, len(ps))
+	encoded[0] = ps[0]
+	for i, n := range ps[1:] {
+		encoded[i+1] = n - encoded[i]
+	}
+	return &srvpb.PagedCrossReferences_PageSearchIndex_Pages{PageIndex: encoded}
+}
+
 func TestCorpusPathFilters(t *testing.T) {
 	tests := []struct {
 		filters *xpb.CorpusPathFilters
@@ -2642,6 +3361,10 @@ func TestCorpusPathFilters(t *testing.T) {
 		{mustParseFilters(`filter: { type: INCLUDE_ONLY resolved_path: "^kythe3/branch/genfiles/"}`),
 			[]string{cps("kythe3//branch", "genfiles", "any/path"), cps("kythe3//branch", "genfiles/more", "any/path")},
 			[]string{cps("kythe3", "bin", "any/path"), cps("kythe3", "genfiles", "some/path")}},
+		// The filter should only apply when the corpus matches.
+		{mustParseFilters(`filter: { type: INCLUDE_ONLY corpus: "^kythe3" path: ".*k.*" corpus_specific_filter: true}`),
+			[]string{cps("kythe3", "", "k1.cc"), cps("kythe3//branch", "", "k3.cc"), cps("other", "", "file.cc")},
+			[]string{cps("kythe3", "", "file.cc")}},
 	}
 
 	for i, test := range tests {
@@ -2661,6 +3384,97 @@ func TestCorpusPathFilters(t *testing.T) {
 			}
 		})
 	}
+}
+
+func randPostings(rand *rand.Rand) *srvpb.PagedCrossReferences_PageSearchIndex_Postings {
+	numPages := rand.Intn(24) + 1
+	p := &srvpb.PagedCrossReferences_PageSearchIndex_Postings{
+		Index: make(map[uint32]*srvpb.PagedCrossReferences_PageSearchIndex_Pages, numPages),
+	}
+	n := rand.Intn(32) + 1
+	for j := 0; j < n; j++ {
+		s := randTrigram(rand)
+		t := tri(s)
+		ps := make([]uint32, rand.Intn(numPages))
+		if len(ps) == 0 {
+			ps = append([]uint32{}, allPages...)
+		} else {
+			for k := 0; k < len(ps); k++ {
+				ps[k] = uint32(rand.Intn(numPages))
+			}
+
+			// Sort and dedup the pages
+			sort.Slice(ps, func(i, j int) bool { return ps[i] < ps[j] })
+			var k int
+			for l := 1; l < len(ps); l++ {
+				if ps[l-1] == ps[l] {
+					continue
+				}
+				ps[k] = ps[l]
+				k++
+			}
+			ps = ps[:k]
+		}
+		p.Index[t] = pages(ps...)
+	}
+	return p
+}
+
+func randQuery(rand *rand.Rand) []*index.Query {
+	qs := make([]*index.Query, rand.Intn(4)+1)
+	if rand.Intn(1000) == 0 {
+		return nil
+	}
+	for j := 0; j < len(qs); j++ {
+		q := &index.Query{}
+		o := rand.Intn(100)
+		switch {
+		case o == 0:
+			q.Op = index.QAll
+		case o == 99:
+			q.Op = index.QNone
+		case o < 50:
+			q.Op = index.QAnd
+		default:
+			q.Op = index.QOr
+		}
+		if q.Op == index.QAll || q.Op == index.QOr {
+			n := rand.Intn(4) + 1
+			for k := 0; k < n; k++ {
+				q.Trigram = append(q.Trigram, randTrigram(rand))
+			}
+		}
+		if rand.Intn(10) == 0 {
+			q.Sub = randQuery(rand)
+		}
+		qs[j] = q
+	}
+	return qs
+}
+
+func TestApplyQueries(t *testing.T) {
+	testutil.Fatalf(t, "Error: %v", quick.Check(func(p *srvpb.PagedCrossReferences_PageSearchIndex_Postings, qs []*index.Query) bool {
+		res := applyQueries(p, qs, nil)
+		if len(res) > 1 {
+			for _, x := range res {
+				// Make sure the result doesn't include the allPages marker.
+				if x == math.MaxUint32 {
+					t.Logf("Postings: %s", p)
+					t.Logf("Query: %s", qs)
+					t.Logf("Result: %v", res)
+					return false
+				}
+			}
+		}
+		return true
+	}, &quick.Config{Values: func(args []reflect.Value, rand *rand.Rand) {
+		args[0] = reflect.ValueOf(randPostings(rand))
+		args[1] = reflect.ValueOf(randQuery(rand))
+	}}))
+}
+
+func randTrigram(rand *rand.Rand) string {
+	return string([]rune{rune(rand.Intn(8)) + 'a', rune(rand.Intn(8)) + 'a', rune(rand.Intn(8)) + 'a'})
 }
 
 func cps(corpus, root, path string) string {
@@ -2683,7 +3497,12 @@ type byOffset []*xpb.CrossReferencesReply_RelatedAnchor
 func (s byOffset) Len() int      { return len(s) }
 func (s byOffset) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 func (s byOffset) Less(i, j int) bool {
-	return s[i].Anchor.Span.Start.ByteOffset < s[j].Anchor.Span.Start.ByteOffset
+	if s[i].Anchor.Span.Start.ByteOffset != s[j].Anchor.Span.Start.ByteOffset {
+		return s[i].Anchor.Span.Start.ByteOffset < s[j].Anchor.Span.Start.ByteOffset
+	} else if len(s[i].Site) == 0 || len(s[i].Site) != len(s[j].Site) {
+		return len(s[i].Site) < len(s[j].Site)
+	}
+	return s[i].Site[0].Span.Start.ByteOffset < s[j].Site[0].Span.Start.ByteOffset
 }
 
 func nodeInfo(n *srvpb.Node) *cpb.NodeInfo {
@@ -2773,9 +3592,22 @@ func (t testProtoTable) Lookup(_ context.Context, key []byte, msg proto.Message)
 	return nil
 }
 
+func (t testProtoTable) LookupValues(_ context.Context, key []byte, m proto.Message, f func(proto.Message) error) error {
+	val, ok := t[string(key)]
+	if !ok {
+		return nil
+	}
+	msg := m.ProtoReflect().New().Interface()
+	proto.Merge(msg, val)
+	if err := f(msg); err != nil && err != table.ErrStopLookup {
+		return err
+	}
+	return nil
+}
+
 func (t testProtoTable) Buffered() table.BufferedProto { panic("UNIMPLEMENTED") }
 
-func (t testProtoTable) Close(_ context.Context) error { return nil }
+func (t testProtoTable) Close(context.Context) error { return nil }
 
 func fi(cp *cpb.CorpusPath, rev string) *srvpb.FileInfo {
 	return &srvpb.FileInfo{

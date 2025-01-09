@@ -31,7 +31,7 @@ namespace kythe {
 /// use and definition.
 class IndexerPPCallbacks : public clang::PPCallbacks {
  public:
-  IndexerPPCallbacks(clang::Preprocessor& PP, GraphObserver& GO, Verbosity V,
+  IndexerPPCallbacks(clang::Preprocessor& PP, GraphObserver& GO,
                      int UsrByteSize);
   ~IndexerPPCallbacks() override;
 
@@ -62,15 +62,13 @@ class IndexerPPCallbacks : public clang::PPCallbacks {
                       const clang::MacroDefinition& Macro,
                       const clang::MacroDirective* Undef) override;
 
-  void InclusionDirective(clang::SourceLocation HashLocation,
-                          const clang::Token& IncludeToken,
-                          llvm::StringRef Filename, bool IsAngled,
-                          clang::CharSourceRange FilenameRange,
-                          llvm::Optional<clang::FileEntryRef> FileRef,
-                          llvm::StringRef SearchPath,
-                          llvm::StringRef RelativePath,
-                          const clang::Module* Imported,
-                          clang::SrcMgr::CharacteristicKind FileType) override;
+  void InclusionDirective(
+      clang::SourceLocation HashLocation, const clang::Token& IncludeToken,
+      llvm::StringRef Filename, bool IsAngled,
+      clang::CharSourceRange FilenameRange, clang::OptionalFileEntryRef FileRef,
+      llvm::StringRef SearchPath, llvm::StringRef RelativePath,
+      const clang::Module* Imported, bool is_module_imported,
+      clang::SrcMgr::CharacteristicKind FileType) override;
 
   /// \brief Run by a `clang::PragmaHandler` to handle the `kythe_metadata`
   /// pragma.
@@ -154,8 +152,6 @@ class IndexerPPCallbacks : public clang::PPCallbacks {
   const clang::Preprocessor& Preprocessor;
   /// The `GraphObserver` we will use for reporting information.
   GraphObserver& Observer;
-  /// Whether we should emit all data.
-  enum Verbosity Verbosity;
   /// \brief The number of (raw) bytes to use to represent a USR. If 0,
   /// no USRs will be recorded.
   int UsrByteSize = 0;

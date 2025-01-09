@@ -6,8 +6,9 @@ java_test(
     name = "options_utils_test",
     size = "small",
     srcs = ["OptionsTest.java"],
-    javacopts = [
-        "--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED",
+    add_exports = [
+        "jdk.compiler/com.sun.tools.javac.code",
+        "jdk.compiler/com.sun.tools.javac.main",
     ],
     test_class = "com.google.devtools.kythe.platform.java.OptionsTest",
     deps = [

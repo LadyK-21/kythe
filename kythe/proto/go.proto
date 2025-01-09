@@ -18,7 +18,7 @@ syntax = "proto3";
 
 package kythe.proto;
 
-option go_package = "go_go_proto";
+option go_package = "kythe.io/kythe/proto/go_go_proto";
 option java_package = "com.google.devtools.kythe.proto";
 
 // Go-specific details used in a CompilationUnit.
@@ -42,4 +42,21 @@ message GoDetails {
 // to a CompilationUnit as a whole or specific required input.
 message GoPackageInfo {
   string import_path = 1;
+}
+
+message FlagConstructors {
+  repeated FlagConstructor flag = 1;
+}
+
+// FlagConstructor is a descriptor of a flag constructing function.
+message FlagConstructor {
+  string pkg_path = 1;
+  string func_name = 2;
+
+  // The 0-based position of the flag's name argument.
+  uint32 name_arg_position = 3;
+  // The 0-based position of the flag's description argument.
+  uint32 description_arg_position = 4;
+  // The 0-based position of the flag's var argument.
+  optional uint32 var_arg_position = 5;
 }

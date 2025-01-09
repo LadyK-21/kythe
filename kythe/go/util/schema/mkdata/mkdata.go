@@ -26,10 +26,11 @@ import (
 	"fmt"
 	"go/format"
 	"io/ioutil"
-	"log"
 	"reflect"
 	"sort"
 	"strings"
+
+	"kythe.io/kythe/go/util/log"
 
 	"bitbucket.org/creachadair/stringset"
 	"github.com/golang/protobuf/proto"
@@ -46,6 +47,7 @@ var (
 
 // A SchemaIndex is a glossary of Kythe enum values and their labels.
 type SchemaIndex struct {
+	Languages map[string]scpb.Language
 	NodeKinds map[string]scpb.NodeKind
 	Subkinds  map[string]scpb.Subkind
 	EdgeKinds map[string]scpb.EdgeKind
@@ -76,6 +78,7 @@ func main() {
 	}
 
 	index := &SchemaIndex{
+		Languages: make(map[string]scpb.Language),
 		NodeKinds: make(map[string]scpb.NodeKind),
 		Subkinds:  make(map[string]scpb.Subkind),
 		EdgeKinds: make(map[string]scpb.EdgeKind),
@@ -87,6 +90,8 @@ func main() {
 			if err == nil {
 				md := ext.(*scpb.Metadata)
 				switch enum.GetName() {
+				case "Language":
+					index.Languages[md.Label] = scpb.Language(val.GetNumber())
 				case "EdgeKind":
 					index.EdgeKinds[md.Label] = scpb.EdgeKind(val.GetNumber())
 				case "NodeKind":
@@ -96,7 +101,7 @@ func main() {
 				case "Subkind":
 					index.Subkinds[md.Label] = scpb.Subkind(val.GetNumber())
 				default:
-					log.Printf("Unknown Kythe enum %s with Metadata: %+v", enum.GetName(), md)
+					log.Errorf("unknown Kythe enum %s with Metadata: %+v", enum.GetName(), md)
 				}
 			}
 		}
@@ -141,6 +146,15 @@ func generateGo(protoFile string, index *SchemaIndex) {
 	fmt.Fprintln(src, `import scpb "kythe.io/kythe/proto/schema_go_proto"`)
 	fmt.Fprintln(src, `var (`)
 
+	fmt.Fprintln(src, "langs = map[string]scpb.Language{")
+	langsRev := make(map[scpb.Language]string)
+	for _, name := range stringset.FromKeys(index.Languages).Elements() {
+		enum := index.Languages[name]
+		fmt.Fprintf(src, "%q: %d,\n", name, enum)
+		langsRev[enum] = name
+	}
+	fmt.Fprintln(src, "}")
+
 	fmt.Fprintln(src, "nodeKinds = map[string]scpb.NodeKind{")
 	nodeKindsRev := make(map[scpb.NodeKind]string)
 	for _, name := range stringset.FromKeys(index.NodeKinds).Elements() {
@@ -174,6 +188,14 @@ func generateGo(protoFile string, index *SchemaIndex) {
 		enum := index.EdgeKinds[name]
 		fmt.Fprintf(src, "%q: %d,\n", name, enum)
 		edgeKindsRev[enum] = name
+	}
+	fmt.Fprintln(src, "}")
+
+	fmt.Fprintln(src, "\nlangsRev = map[scpb.Language]string{")
+	for _, kind := range sortedKeys(langsRev) {
+		enum := kind.(scpb.Language)
+		name := langsRev[enum]
+		fmt.Fprintf(src, "%d: %q,\n", enum, name)
 	}
 	fmt.Fprintln(src, "}")
 
@@ -211,6 +233,9 @@ func generateGo(protoFile string, index *SchemaIndex) {
 	fmt.Fprintln(src, ")")
 
 	fmt.Fprint(src, `
+// Language returns the schema enum for the given language.
+func Language(k string) scpb.Language { return langs[k] }
+
 // NodeKind returns the schema enum for the given node kind.
 func NodeKind(k string) scpb.NodeKind { return nodeKinds[k] }
 
@@ -222,6 +247,9 @@ func FactName(f string) scpb.FactName { return factNames[f] }
 
 // Subkind returns the schema enum for the given subkind.
 func Subkind(k string) scpb.Subkind { return subkinds[k] }
+
+// LanguageString returns the string representation of the given language.
+func LanguageString(k scpb.Language) string { return langsRev[k] }
 
 // NodeKindString returns the string representation of the given node kind.
 func NodeKindString(k scpb.NodeKind) string { return nodeKindsRev[k] }
@@ -253,14 +281,14 @@ var u32 = reflect.TypeOf(uint32(0))
 // a type convertible to uint32 (e.g., a proto enumeration).  This function
 // will panic if v does not have an appropriate concrete type.  The concrete
 // type of each returned element remains X (not uint32).
-func sortedKeys(v interface{}) []interface{} {
+func sortedKeys(v any) []any {
 	keys := reflect.ValueOf(v).MapKeys()
 	sort.Slice(keys, func(i, j int) bool {
 		a := keys[i].Convert(u32).Interface().(uint32)
 		b := keys[j].Convert(u32).Interface().(uint32)
 		return a < b
 	})
-	vals := make([]interface{}, len(keys))
+	vals := make([]any, len(keys))
 	for i, key := range keys {
 		vals[i] = key.Interface()
 	}
@@ -279,6 +307,7 @@ func generateJava(protoFile string, index *SchemaIndex) {
 	fmt.Fprintln(src, "import com.google.devtools.kythe.proto.Schema.EdgeKind;")
 	fmt.Fprintln(src, "import com.google.devtools.kythe.proto.Schema.Fact;")
 	fmt.Fprintln(src, "import com.google.devtools.kythe.proto.Schema.FactName;")
+	fmt.Fprintln(src, "import com.google.devtools.kythe.proto.Schema.Language;")
 	fmt.Fprintln(src, "import com.google.devtools.kythe.proto.Schema.NodeKind;")
 	fmt.Fprintln(src, "import com.google.devtools.kythe.proto.Schema.Subkind;")
 	fmt.Fprintln(src, "import com.google.protobuf.ByteString;")
@@ -286,6 +315,13 @@ func generateJava(protoFile string, index *SchemaIndex) {
 	fmt.Fprintln(src, "/** Utility for handling schema strings and their corresponding protocol buffer enums. */")
 	fmt.Fprintln(src, "public final class Schema {")
 	fmt.Fprintln(src, "private Schema() {}")
+
+	fmt.Fprintln(src, "private static final ImmutableBiMap<String, Language> LANGUAGES = ImmutableBiMap.<String, Language>builder()")
+	for _, name := range stringset.FromKeys(index.Languages).Elements() {
+		enum := index.Languages[name]
+		fmt.Fprintf(src, ".put(%q, Language.%s)\n", name, enum)
+	}
+	fmt.Fprintln(src, ".build();")
 
 	fmt.Fprintln(src, "private static final ImmutableBiMap<String, NodeKind> NODE_KINDS = ImmutableBiMap.<String, NodeKind>builder()")
 	for _, name := range stringset.FromKeys(index.NodeKinds).Elements() {
@@ -315,6 +351,9 @@ func generateJava(protoFile string, index *SchemaIndex) {
 	}
 	fmt.Fprintln(src, ".build();")
 
+	fmt.Fprintln(src, "/** Returns the schema {@link Language} for the given language. */")
+	fmt.Fprintln(src, "public static Language language(String k) { return LANGUAGES.getOrDefault(k, Language.UNKNOWN_LANGUAGE); }")
+
 	fmt.Fprintln(src, "/** Returns the schema {@link NodeKind} for the given kind. */")
 	fmt.Fprintln(src, "public static NodeKind nodeKind(String k) { return NODE_KINDS.getOrDefault(k, NodeKind.UNKNOWN_NODE_KIND); }")
 
@@ -332,6 +371,9 @@ func generateJava(protoFile string, index *SchemaIndex) {
 
 	fmt.Fprintln(src, "/** Returns the schema {@link FactName} for the given name. */")
 	fmt.Fprintln(src, "public static FactName factName(String n) { return FACT_NAMES.getOrDefault(n, FactName.UNKNOWN_FACT_NAME); }")
+
+	fmt.Fprintln(src, "/** Returns the string representation of the given {@link Language}. */")
+	fmt.Fprintln(src, "public static String languageString(Language l) { return LANGUAGES.inverse().getOrDefault(l, \"\"); }")
 
 	fmt.Fprintln(src, "/** Returns the string representation of the given {@link NodeKind}. */")
 	fmt.Fprintln(src, "public static String nodeKindString(NodeKind k) { return NODE_KINDS.inverse().getOrDefault(k, \"\"); }")

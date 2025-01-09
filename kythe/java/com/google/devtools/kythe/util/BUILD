@@ -36,6 +36,7 @@ java_library(
         "//kythe/proto:storage_java_proto",
         "//third_party/guava",
         "@com_google_protobuf//:protobuf_java",
+        "@maven//:org_checkerframework_checker_qual",
     ],
 )
 
@@ -60,6 +61,7 @@ java_library(
         "@com_google_protobuf//:protobuf_java",
         "@com_google_protobuf//:protobuf_java_util",
         "@maven//:com_google_code_gson_gson",
+        "@maven//:org_checkerframework_checker_qual",
     ],
 )
 
@@ -75,6 +77,14 @@ java_library(
     deps = [
         "//kythe/java/com/google/devtools/kythe/doc:marked_source_renderer",
         "//kythe/proto:common_java_proto",
+    ],
+)
+
+java_library(
+    name = "ordered_compatibility_service",
+    srcs = ["OrderedCompatibilityService.java"],
+    deps = [
+        "//third_party/guava",
     ],
 )
 

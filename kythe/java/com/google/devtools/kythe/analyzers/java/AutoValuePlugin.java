@@ -56,6 +56,7 @@ import java.util.Map;
 import java.util.Optional;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.type.TypeKind;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Kythe {@link Plugin} that emits property entries for {@link AutoValue} classes. */
 @AutoService(Plugin.class)
@@ -73,6 +74,11 @@ public class AutoValuePlugin extends Plugin.Scanner<Void, Void> {
   private Types types;
 
   public AutoValuePlugin() {}
+
+  @Override
+  public String getName() {
+    return "auto_value_plugin";
+  }
 
   @Override
   public Void visitTopLevel(JCCompilationUnit compilation, Void v) {
@@ -133,8 +139,17 @@ public class AutoValuePlugin extends Plugin.Scanner<Void, Void> {
             .forEach(
                 getter -> entrySets.emitEdge(getter, EdgeKind.PROPERTY_READS, propNode.getVName()));
 
+        // Mark the "set" semantic of the setter generator symbol.
+        prop.setter()
+            .map(GeneratedSymbol::abstractSym)
+            .flatMap(kytheGraph::getNode)
+            .map(KytheNode::getVName)
+            .ifPresent(
+                setter ->
+                    entrySets.getEmitter().emitFact(setter, "/kythe/semantic/generated", "set"));
+
         // Emit property/writes edges for setter symbols.
-        Streams.stream(prop.setter())
+        prop.setter().stream()
             .flatMap(GeneratedSymbol::stream)
             .map(kytheGraph::getNode)
             .flatMap(Streams::stream)
@@ -146,7 +161,8 @@ public class AutoValuePlugin extends Plugin.Scanner<Void, Void> {
     }
   }
 
-  private JCClassDecl findAnnotatedSuperclass(ClassType classType, String annotationName) {
+  private @Nullable JCClassDecl findAnnotatedSuperclass(
+      ClassType classType, String annotationName) {
     while (true) {
       for (Type i : classType.interfaces_field) {
         JCTree superTypeTree = javacTrees.getTree(i.asElement());
@@ -301,7 +317,7 @@ public class AutoValuePlugin extends Plugin.Scanner<Void, Void> {
     return ann.getAnnotationType().type.tsym.toString();
   }
 
-  private static Object annotationLiteralValue(JCAnnotation ann, String name) {
+  private static @Nullable Object annotationLiteralValue(JCAnnotation ann, String name) {
     for (JCExpression expr : ann.getArguments()) {
       JCAssign a = (JCAssign) expr;
       if (a.lhs.toString().equals(name) && a.rhs instanceof JCLiteral) {

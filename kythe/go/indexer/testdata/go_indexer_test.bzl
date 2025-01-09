@@ -16,6 +16,7 @@
 
 # Bazel rules to extract Go compilations from library targets for testing the
 # Go cross-reference indexer.
+load("@bazel_skylib//lib:shell.bzl", "shell")
 load(
     "@io_bazel_rules_go//go:def.bzl",
     "GoSource",
@@ -23,7 +24,7 @@ load(
 )
 load(
     "//tools/build_rules/verifier_test:verifier_test.bzl",
-    "KytheEntries",
+    "KytheEntryProducerInfo",
     "kythe_integration_test",
     "verifier_test",
 )
@@ -144,7 +145,7 @@ go_extract = rule(
         "_extractor": attr.label(
             default = Label("//kythe/go/extractors/cmd/gotool"),
             executable = True,
-            cfg = "host",
+            cfg = "exec",
         ),
         "_sdk_files": attr.label(
             allow_files = True,
@@ -158,8 +159,7 @@ go_extract = rule(
 
 def _go_entries(ctx):
     kzip = ctx.attr.kzip.kzip
-    indexer = ctx.files._indexer[-1]
-    iargs = [indexer.path]
+    iargs = []
     output = ctx.outputs.entries
 
     # If the test wants marked source, enable support for it in the indexer.
@@ -169,24 +169,44 @@ def _go_entries(ctx):
     if ctx.attr.emit_anchor_scopes:
         iargs.append("-anchor_scopes")
 
-    if ctx.attr.use_compilation_corpus_as_default:
-        iargs.append("-use_compilation_corpus_as_default")
+    if ctx.attr.use_compilation_corpus_for_all:
+        iargs.append("-use_compilation_corpus_for_all")
+
+    if ctx.attr.use_file_as_top_level_scope:
+        iargs.append("-use_file_as_top_level_scope")
+
+    if ctx.attr.override_stdlib_corpus:
+        iargs.append("-override_stdlib_corpus=%s" % ctx.attr.override_stdlib_corpus)
 
     # If the test wants linkage metadata, enable support for it in the indexer.
     if ctx.attr.metadata_suffix:
         iargs += ["-meta", ctx.attr.metadata_suffix]
 
+    test_runners = []
+    eargs = [ctx.expand_location(arg.replace("$(location", "$(rootpath"), ctx.attr.data) for arg in ctx.attr.extra_indexer_args]
+    test_runners.append(_make_test_runner(ctx, {}, arguments = iargs + eargs + [kzip.short_path]))
+
+    iargs += [ctx.expand_location(arg, ctx.attr.data) for arg in ctx.attr.extra_indexer_args]
     iargs += [kzip.path, "| gzip >" + output.path]
+    iargs.insert(0, ctx.executable._exec_indexer.path)
 
     cmds = ["set -e", "set -o pipefail", " ".join(iargs), ""]
     ctx.actions.run_shell(
         mnemonic = "GoIndexer",
         command = "\n".join(cmds),
         outputs = [output],
-        inputs = [kzip],
-        tools = [ctx.executable._indexer],
+        inputs = [kzip] + ctx.files.data,
+        tools = [ctx.executable._exec_indexer],
     )
-    return [KytheEntries(compressed = depset([output]), files = depset())]
+
+    return [
+        KytheEntryProducerInfo(
+            executables = test_runners,
+            runfiles = ctx.runfiles(
+                files = (test_runners + [kzip] + ctx.files.data),
+            ).merge(ctx.attr._indexer[DefaultInfo].default_runfiles),
+        ),
+    ]
 
 # Run the Kythe indexer on the output that results from a go_extract rule.
 go_entries = rule(
@@ -206,41 +226,88 @@ go_entries = rule(
 
         # The suffix used to recognize linkage metadata files, if non-empty.
         "metadata_suffix": attr.string(default = ""),
-        "use_compilation_corpus_as_default": attr.bool(default = False),
+        "use_compilation_corpus_for_all": attr.bool(default = False),
+        "use_file_as_top_level_scope": attr.bool(default = False),
+        "override_stdlib_corpus": attr.string(default = ""),
+        "extra_indexer_args": attr.string_list(),
+
+        # Extra files required by the indexer
+        "data": attr.label_list(
+            allow_empty = True,
+            allow_files = True,
+        ),
 
         # The location of the Go indexer binary.
         "_indexer": attr.label(
             default = Label("//kythe/go/indexer/cmd/go_indexer"),
             executable = True,
-            cfg = "host",
+            cfg = "target",
+        ),
+        "_exec_indexer": attr.label(
+            default = Label("//kythe/go/indexer/cmd/go_indexer"),
+            executable = True,
+            cfg = "exec",
+        ),
+        "_test_template": attr.label(
+            default = Label("//tools/build_rules/verifier_test:indexer.sh.in"),
+            allow_single_file = True,
         ),
     },
     outputs = {"entries": "%{name}.entries.gz"},
 )
 
+def _make_test_runner(ctx, env, arguments):
+    output = ctx.actions.declare_file(ctx.label.name + "_test_runner")
+    ctx.actions.expand_template(
+        output = output,
+        is_executable = True,
+        template = ctx.file._test_template,
+        substitutions = {
+            "@INDEXER@": shell.quote(ctx.executable._indexer.short_path),
+            "@ENV@": "\n".join([
+                shell.quote("{key}={value}".format(key = key, value = value))
+                for key, value in env.items()
+            ]),
+            "@ARGS@": "\n".join([
+                shell.quote(a)
+                for a in arguments
+            ]),
+        },
+    )
+    return output
+
 def go_verifier_test(
         name,
         entries,
+        srcs = [],
         deps = [],
         size = "small",
         tags = [],
         log_entries = False,
         has_marked_source = False,
-        allow_duplicates = False):
-    opts = ["--use_file_nodes", "--show_goals", "--check_for_singletons"]
+        resolve_code_facts = False,
+        allow_duplicates = False,
+        use_fast_solver = False):
+    opts = ["--use_file_nodes", "--show_goals", "--check_for_singletons", "--goal_regex='\\s*//\\s*-(.*)'"]
     if log_entries:
         opts.append("--show_protos")
     if allow_duplicates or len(deps) > 0:
         opts.append("--ignore_dups")
+    if len(srcs) > 0:
+        opts.append("--nofile_vnames")
 
     # If the test wants marked source, enable support for it in the verifier.
     if has_marked_source:
         opts.append("--convert_marked_source")
+    if use_fast_solver:
+        opts.append("--use_fast_solver")
     return verifier_test(
         name = name,
         size = size,
         opts = opts,
         tags = tags,
+        resolve_code_facts = resolve_code_facts,
+        srcs = srcs,
         deps = [entries] + deps,
     )
 
@@ -254,8 +321,11 @@ def _go_indexer(
         has_marked_source = False,
         emit_anchor_scopes = False,
         allow_duplicates = False,
-        use_compilation_corpus_as_default = False,
+        use_compilation_corpus_for_all = False,
+        use_file_as_top_level_scope = False,
+        override_stdlib_corpus = "",
         metadata_suffix = "",
+        extra_indexer_args = [],
         extra_extractor_args = []):
     if importpath == None:
         importpath = native.package_name() + "/" + name
@@ -276,11 +346,16 @@ def _go_indexer(
     entries = name + "_entries"
     go_entries(
         name = entries,
+        data = data,
         has_marked_source = has_marked_source,
         emit_anchor_scopes = emit_anchor_scopes,
-        use_compilation_corpus_as_default = use_compilation_corpus_as_default,
+        use_compilation_corpus_for_all = use_compilation_corpus_for_all,
+        use_file_as_top_level_scope = use_file_as_top_level_scope,
+        override_stdlib_corpus = override_stdlib_corpus,
+        extra_indexer_args = extra_indexer_args,
         kzip = ":" + kzip,
         metadata_suffix = metadata_suffix,
+        tags = ["manual"],
     )
     return entries
 
@@ -296,32 +371,44 @@ def go_indexer_test(
         log_entries = False,
         data = None,
         has_marked_source = False,
+        resolve_code_facts = False,
         emit_anchor_scopes = False,
         allow_duplicates = False,
-        use_compilation_corpus_as_default = False,
+        use_compilation_corpus_for_all = False,
+        use_file_as_top_level_scope = False,
+        override_stdlib_corpus = "",
         metadata_suffix = "",
-        extra_extractor_args = []):
+        extra_goals = [],
+        extra_indexer_args = [],
+        extra_extractor_args = [],
+        use_fast_solver = False):
     entries = _go_indexer(
         name = name,
         srcs = srcs,
         data = data,
         has_marked_source = has_marked_source,
         emit_anchor_scopes = emit_anchor_scopes,
-        use_compilation_corpus_as_default = use_compilation_corpus_as_default,
+        use_compilation_corpus_for_all = use_compilation_corpus_for_all,
+        use_file_as_top_level_scope = use_file_as_top_level_scope,
+        override_stdlib_corpus = override_stdlib_corpus,
         importpath = import_path,
         metadata_suffix = metadata_suffix,
         deps = deps,
+        extra_indexer_args = extra_indexer_args,
         extra_extractor_args = extra_extractor_args,
     )
     go_verifier_test(
         name = name,
+        srcs = extra_goals,
         size = size,
         allow_duplicates = allow_duplicates,
         entries = ":" + entries,
         deps = [dep + "_entries" for dep in deps],
         has_marked_source = has_marked_source,
+        resolve_code_facts = resolve_code_facts,
         log_entries = log_entries,
         tags = tags,
+        use_fast_solver = use_fast_solver,
     )
 
 # A convenience macro to generate a test library, pass it to the Go indexer,

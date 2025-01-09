@@ -16,45 +16,68 @@
 
 #include "cxx_extractor.h"
 
-#include <fcntl.h>
-#include <openssl/sha.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
+#include <algorithm>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <stack>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
-#include "absl/memory/memory.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
-#include "absl/types/optional.h"
+#include "clang/Basic/FileEntry.h"
+#include "clang/Basic/Module.h"
+#include "clang/Basic/SourceLocation.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TokenKinds.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
+#include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/MacroArgs.h"
 #include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Pragma.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Tooling/Tooling.h"
-#include "glog/logging.h"
+#include "google/protobuf/any.pb.h"
+#include "google/protobuf/message.h"
 #include "kythe/cxx/common/file_utils.h"
+#include "kythe/cxx/common/index_writer.h"
 #include "kythe/cxx/common/json_proto.h"
 #include "kythe/cxx/common/kzip_writer.h"
 #include "kythe/cxx/common/path_utils.h"
+#include "kythe/cxx/common/sha256_hasher.h"
 #include "kythe/cxx/extractor/CommandLineUtils.h"
+#include "kythe/cxx/extractor/cxx_details.h"
 #include "kythe/cxx/extractor/language.h"
 #include "kythe/cxx/extractor/path_utils.h"
-#include "kythe/cxx/indexer/cxx/proto_conversions.h"
+#include "kythe/cxx/indexer/cxx/stream_adapter.h"
 #include "kythe/proto/analysis.pb.h"
 #include "kythe/proto/buildinfo.pb.h"
 #include "kythe/proto/cxx.pb.h"
 #include "kythe/proto/filecontext.pb.h"
+#include "kythe/proto/storage.pb.h"
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -63,10 +86,6 @@
 
 namespace kythe {
 namespace {
-llvm::StringRef ToStringRef(absl::string_view sv) {
-  return {sv.data(), sv.size()};
-}
-
 using cxx_extractor::LookupFileForIncludePragma;
 using ::google::protobuf::RepeatedPtrField;
 
@@ -88,6 +107,15 @@ constexpr absl::string_view kStableRootDirectories[] = {
     "/kythe_cxx_extractor_root",
 };
 
+bool IsSpecialBufferName(llvm::StringRef id) {
+  return id == clang::Module::getModuleInputBufferName() ||
+         id == "<built-in>" || id == "<command line>";
+}
+
+bool IsStdinPath(llvm::StringRef path) {
+  return path == "-" || path == "<stdin>" || path.starts_with("<stdin:");
+}
+
 absl::string_view GetPathForProto(
     const proto::CxxCompilationUnitDetails::SystemHeaderPrefix& prefix) {
   return prefix.prefix();
@@ -107,6 +135,31 @@ absl::string_view GetPathForProto(
     const proto::CxxCompilationUnitDetails::HeaderSearchDir& dir) {
   return dir.path();
 }
+
+// Returns a normalized, lexically-cleaned path.
+std::string RelativizePath(llvm::StringRef path) {
+  if (path.starts_with(kBuiltinResourceDirectory)) {
+    return std::string(path);
+  }
+  if (IsStdinPath(path)) {
+    return std::string(path);
+  }
+  absl::StatusOr<PathCleaner> cleaner = PathCleaner::Create(".");
+  if (!cleaner.ok()) {
+    LOG(WARNING) << "Unable to create PathCleaner:" << cleaner.status();
+    return std::string(path);
+  }
+  absl::StatusOr<std::string> relative =
+      cleaner->Relativize({path.data(), path.size()});
+  if (!relative.ok()) {
+    LOG(WARNING) << "Unable to relativize path:" << relative.status();
+    return std::string(path);
+  }
+  return *std::move(relative);
+}
+
+// Returns a normalized path, removing the leading "./" if any.
+std::string NormalizePath(llvm::StringRef path) { return RelativizePath(path); }
 
 class RequiredRoots {
  public:
@@ -174,18 +227,6 @@ std::string FindStableRoot(
       roots.Update("system_header_prefix", details.system_header_prefix()) &&
       roots.Update("stat_path", details.stat_path());
   return roots.GetStableRoot();
-}
-
-/// \brief Lowercase-string-hex-encodes the array sha_buf.
-/// \param sha_buf The bytes of the hash.
-std::string LowercaseStringHexEncodeSha(
-    const unsigned char (&sha_buf)[SHA256_DIGEST_LENGTH]) {
-  std::string sha_text(SHA256_DIGEST_LENGTH * 2, '\0');
-  for (unsigned i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-    sha_text[i * 2] = kHexDigits[(sha_buf[i] >> 4) & 0xF];
-    sha_text[i * 2 + 1] = kHexDigits[sha_buf[i] & 0xF];
-  }
-  return sha_text;
 }
 
 google::protobuf::Any* FindMutableContext(
@@ -269,17 +310,17 @@ class OrderFileInputByVName {
 /// \brief A SHA-256 hash accumulator.
 class RunningHash {
  public:
-  RunningHash() { ::SHA256_Init(&sha_context_); }
   /// \brief Update the hash.
   /// \param bytes Start of the memory to use to update.
   /// \param length Number of bytes to read.
   void Update(const void* bytes, size_t length) {
-    ::SHA256_Update(&sha_context_,
-                    reinterpret_cast<const unsigned char*>(bytes), length);
+    hasher_.Update({reinterpret_cast<const char*>(bytes), length});
   }
   /// \brief Update the hash with a string.
   /// \param string The string to include in the hash.
-  void Update(llvm::StringRef string) { Update(string.data(), string.size()); }
+  void Update(llvm::StringRef string) {
+    hasher_.Update({string.data(), string.size()});
+  }
   /// \brief Update the hash with a `ConditionValueKind`.
   /// \param cvk The enumerator to include in the hash.
   void Update(clang::PPCallbacks::ConditionValueKind cvk) {
@@ -307,23 +348,12 @@ class RunningHash {
   void Update(unsigned u) { Update(&u, sizeof(u)); }
   /// \brief Return the hash up to this point and reset internal state.
   std::string CompleteAndReset() {
-    unsigned char sha_buf[SHA256_DIGEST_LENGTH];
-    ::SHA256_Final(sha_buf, &sha_context_);
-    ::SHA256_Init(&sha_context_);
-    return LowercaseStringHexEncodeSha(sha_buf);
+    return std::exchange(hasher_, {}).FinishHexString();
   }
 
  private:
-  ::SHA256_CTX sha_context_;
+  Sha256Hasher hasher_;
 };
-
-/// \brief Returns the lowercase-string-hex-encoded sha256 digest of the first
-/// `length` bytes of `bytes`.
-static std::string Sha256(const void* bytes, size_t length) {
-  unsigned char sha_buf[SHA256_DIGEST_LENGTH];
-  ::SHA256(reinterpret_cast<const unsigned char*>(bytes), length, sha_buf);
-  return LowercaseStringHexEncodeSha(sha_buf);
-}
 
 /// \brief Returns a kzip-based IndexWriter or dies.
 IndexWriter OpenKzipWriterOrDie(const std::string& path) {
@@ -360,7 +390,7 @@ struct FileState {
 /// \brief Hooks the Clang preprocessor to detect required include files.
 class ExtractorPPCallbacks : public clang::PPCallbacks {
  public:
-  ExtractorPPCallbacks(ExtractorState state);
+  explicit ExtractorPPCallbacks(ExtractorState state);
 
   /// \brief Common utility to pop a file off the file stack.
   ///
@@ -370,10 +400,10 @@ class ExtractorPPCallbacks : public clang::PPCallbacks {
 
   /// \brief Records the content of `file` (with spelled path `path`)
   /// if it has not already been recorded.
-  void AddFile(const clang::FileEntry* file, const std::string& path);
+  std::string AddFile(clang::FileEntryRef file, llvm::StringRef path);
 
   /// \brief Records the content of `file` if it has not already been recorded.
-  std::string AddFile(const clang::FileEntry* file, llvm::StringRef file_name,
+  std::string AddFile(clang::FileEntryRef file, llvm::StringRef file_name,
                       llvm::StringRef search_path,
                       llvm::StringRef relative_path);
 
@@ -451,8 +481,9 @@ class ExtractorPPCallbacks : public clang::PPCallbacks {
   void InclusionDirective(
       clang::SourceLocation HashLoc, const clang::Token& IncludeTok,
       llvm::StringRef FileName, bool IsAngled, clang::CharSourceRange Range,
-      llvm::Optional<clang::FileEntryRef> File, llvm::StringRef SearchPath,
+      clang::OptionalFileEntryRef File, llvm::StringRef SearchPath,
       llvm::StringRef RelativePath, const clang::Module* Imported,
+      bool is_module_imported,
       clang::SrcMgr::CharacteristicKind FileType) override;
 
   /// \brief Run by a `clang::PragmaHandler` to handle the `kythe_claim` pragma.
@@ -480,7 +511,7 @@ class ExtractorPPCallbacks : public clang::PPCallbacks {
 
  private:
   /// \brief Returns the main file for this compile action.
-  const clang::FileEntry* GetMainFile();
+  clang::OptionalFileEntryRef GetMainFile();
 
   /// \brief Return the active `RunningHash` for preprocessor events.
   RunningHash* history();
@@ -496,8 +527,7 @@ class ExtractorPPCallbacks : public clang::PPCallbacks {
   /// \param file The file entry of the main source file.
   /// \param path The path as known to Clang.
   /// \return The path that should be used to generate VNames.
-  std::string FixStdinPath(const clang::FileEntry* file,
-                           const std::string& path);
+  std::string FixStdinPath(clang::FileEntryRef file, llvm::StringRef path);
 
   /// The `SourceManager` used for the compilation.
   clang::SourceManager* source_manager_;
@@ -511,6 +541,8 @@ class ExtractorPPCallbacks : public clang::PPCallbacks {
   unsigned last_inclusion_offset_;
   /// The stack of files we've entered. top() gives the current file.
   std::stack<FileState> current_files_;
+  /// The main source file path.
+  std::string* main_source_file_;
   /// The transcript of the main source file.
   std::string* main_source_file_transcript_;
   /// Contents of the files we've used, indexed by normalized path.
@@ -525,6 +557,7 @@ class ExtractorPPCallbacks : public clang::PPCallbacks {
 ExtractorPPCallbacks::ExtractorPPCallbacks(ExtractorState state)
     : source_manager_(state.source_manager),
       preprocessor_(state.preprocessor),
+      main_source_file_(state.main_source_file),
       main_source_file_transcript_(state.main_source_file_transcript),
       source_files_(state.source_files),
       index_writer_(state.index_writer),
@@ -532,7 +565,7 @@ ExtractorPPCallbacks::ExtractorPPCallbacks(ExtractorState state)
           state.main_source_file_stdin_alternate) {
   class ClaimPragmaHandlerWrapper : public clang::PragmaHandler {
    public:
-    ClaimPragmaHandlerWrapper(ExtractorPPCallbacks* context)
+    explicit ClaimPragmaHandlerWrapper(ExtractorPPCallbacks* context)
         : PragmaHandler("kythe_claim"), context_(context) {}
     void HandlePragma(clang::Preprocessor& preprocessor,
                       clang::PragmaIntroducer introducer,
@@ -549,7 +582,7 @@ ExtractorPPCallbacks::ExtractorPPCallbacks(ExtractorState state)
 
   class MetadataPragmaHandlerWrapper : public clang::PragmaHandler {
    public:
-    MetadataPragmaHandlerWrapper(ExtractorPPCallbacks* context)
+    explicit MetadataPragmaHandlerWrapper(ExtractorPPCallbacks* context)
         : PragmaHandler("kythe_metadata"), context_(context) {}
     void HandlePragma(clang::Preprocessor& preprocessor,
                       clang::PragmaIntroducer introducer,
@@ -566,12 +599,32 @@ ExtractorPPCallbacks::ExtractorPPCallbacks(ExtractorState state)
 }
 
 void ExtractorPPCallbacks::FileChanged(
-    clang::SourceLocation /*Loc*/, FileChangeReason Reason,
+    clang::SourceLocation Loc, FileChangeReason Reason,
     clang::SrcMgr::CharacteristicKind /*FileType*/, clang::FileID /*PrevFID*/) {
   if (Reason == EnterFile) {
     if (last_inclusion_directive_path_.empty()) {
-      current_files_.push(FileState{std::string(GetMainFile()->getName()),
-                                    ClaimDirective::NoDirectivesFound});
+      if (clang::OptionalFileEntryRef mfile = GetMainFile()) {
+        current_files_.push(FileState{NormalizePath(mfile->getName()),
+                                      ClaimDirective::AlwaysClaim});
+      } else {
+        // For some compilations with modules enabled, there may be no main
+        // source file set. Previously we would segfault
+        // (`GetMainFile()->getName()`) above instead of `mfile`, so CHECK-
+        // failing below is no more unpleasant.
+        LOG(WARNING) << "unusual EnterFile @"
+                     << Loc.printToString(*source_manager_);
+        auto fid = source_manager_->getFileID(Loc);
+        CHECK(fid.isValid());
+        auto buffer = source_manager_->getBufferOrNone(fid);
+        CHECK(buffer.has_value());
+        auto id = buffer->getBufferIdentifier();
+        CHECK(IsSpecialBufferName(id))
+            << "unknown buffer " << StreamAdapter::Stream(id);
+        // TODO(zarko): we need a more appropriate path for the synthesized
+        // <module-includes> buffer.
+        current_files_.push(
+            FileState{NormalizePath(id), ClaimDirective::AlwaysClaim});
+      }
     } else {
       CHECK(!current_files_.empty());
       current_files_.top().last_include_offset = last_inclusion_offset_;
@@ -619,40 +672,42 @@ PreprocessorTranscript ExtractorPPCallbacks::PopFile() {
 }
 
 void ExtractorPPCallbacks::EndOfMainFile() {
-  AddFile(GetMainFile(), std::string(GetMainFile()->getName()));
-  *main_source_file_transcript_ = PopFile();
+  if (clang::OptionalFileEntryRef mfile = GetMainFile()) {
+    *main_source_file_ = AddFile(*mfile, mfile->getName());
+    *main_source_file_transcript_ = PopFile();
+  }
 }
 
-std::string ExtractorPPCallbacks::FixStdinPath(const clang::FileEntry* file,
-                                               const std::string& in_path) {
-  if (in_path == "-" || in_path == "<stdin>") {
+std::string ExtractorPPCallbacks::FixStdinPath(clang::FileEntryRef file,
+                                               llvm::StringRef path) {
+  if (IsStdinPath(path)) {
     if (main_source_file_stdin_alternate_->empty()) {
       const llvm::MemoryBufferRef buffer =
           source_manager_->getMemoryBufferForFileOrFake(file);
       std::string hashed_name =
-          Sha256(buffer.getBufferStart(),
-                 buffer.getBufferEnd() - buffer.getBufferStart());
+          Sha256Hasher(buffer.getBuffer()).FinishHexString();
       *main_source_file_stdin_alternate_ = "<stdin:" + hashed_name + ">";
     }
     return *main_source_file_stdin_alternate_;
   }
-  return in_path;
+  return std::string(path);
 }
 
-void ExtractorPPCallbacks::AddFile(const clang::FileEntry* file,
-                                   const std::string& in_path) {
-  std::string path = FixStdinPath(file, in_path);
-  auto contents = source_files_->insert({in_path, SourceFile{""}});
-  if (contents.second) {
+std::string ExtractorPPCallbacks::AddFile(clang::FileEntryRef file,
+                                          llvm::StringRef path) {
+  auto [iter, inserted] =
+      source_files_->insert({NormalizePath(path), SourceFile{""}});
+  if (inserted) {
     const llvm::MemoryBufferRef buffer =
         source_manager_->getMemoryBufferForFileOrFake(file);
-    contents.first->second.file_content.assign(buffer.getBufferStart(),
-                                               buffer.getBufferEnd());
-    contents.first->second.vname.CopyFrom(
-        index_writer_->VNameForPath(index_writer_->RelativizePath(path)));
-    VLOG(1) << "added content for " << path << ": mapped to "
-            << contents.first->second.vname.DebugString() << "\n";
+    iter->second.file_content.assign(buffer.getBufferStart(),
+                                     buffer.getBufferEnd());
+    iter->second.vname =
+        index_writer_->VNameForPath(FixStdinPath(file, iter->first));
+    VLOG(1) << "added content for " << iter->first << ": mapped to "
+            << iter->second.vname << "\n";
   }
+  return iter->first;
 }
 
 void ExtractorPPCallbacks::RecordMacroExpansion(
@@ -709,16 +764,16 @@ void ExtractorPPCallbacks::RecordSpecificLocation(clang::SourceLocation loc) {
       source_manager_->getFileID(loc) != preprocessor_->getPredefinesFileID()) {
     history()->Update(source_manager_->getFileOffset(loc));
     const auto filename_ref = source_manager_->getFilename(loc);
-    const auto* file_ref =
-        source_manager_->getFileEntryForID(source_manager_->getFileID(loc));
+    const clang::OptionalFileEntryRef file_ref =
+        source_manager_->getFileEntryRefForID(source_manager_->getFileID(loc));
     if (file_ref) {
-      auto vname = index_writer_->VNameForPath(index_writer_->RelativizePath(
-          FixStdinPath(file_ref, std::string(filename_ref))));
-      history()->Update(ToStringRef(vname.signature()));
-      history()->Update(ToStringRef(vname.corpus()));
-      history()->Update(ToStringRef(vname.root()));
-      history()->Update(ToStringRef(vname.path()));
-      history()->Update(ToStringRef(vname.language()));
+      auto vname =
+          index_writer_->VNameForPath(FixStdinPath(*file_ref, filename_ref));
+      history()->Update(vname.signature());
+      history()->Update(vname.corpus());
+      history()->Update(vname.root());
+      history()->Update(vname.path());
+      history()->Update(vname.language());
     } else {
       LOG(WARNING) << "No FileRef for " << filename_ref.str() << " (location "
                    << loc.printToString(*source_manager_) << ")";
@@ -840,9 +895,9 @@ std::string IncludeDirGroupToString(const clang::frontend::IncludeDirGroup& G) {
 void ExtractorPPCallbacks::InclusionDirective(
     clang::SourceLocation HashLoc, const clang::Token& IncludeTok,
     llvm::StringRef FileName, bool IsAngled, clang::CharSourceRange Range,
-    llvm::Optional<clang::FileEntryRef> File, llvm::StringRef SearchPath,
+    clang::OptionalFileEntryRef File, llvm::StringRef SearchPath,
     llvm::StringRef RelativePath, const clang::Module* Imported,
-    clang::SrcMgr::CharacteristicKind FileType) {
+    bool is_module_imported, clang::SrcMgr::CharacteristicKind FileType) {
   if (!File) {
     LOG(WARNING) << "Found null file: " << FileName.str();
     LOG(WARNING) << "Search path was " << SearchPath.str();
@@ -867,21 +922,21 @@ void ExtractorPPCallbacks::InclusionDirective(
     return;
   }
   last_inclusion_directive_path_ =
-      AddFile(&File->getFileEntry(), FileName, SearchPath, RelativePath);
+      AddFile(*File, FileName, SearchPath, RelativePath);
   last_inclusion_offset_ = source_manager_->getFileOffset(HashLoc);
 }
 
-std::string ExtractorPPCallbacks::AddFile(const clang::FileEntry* file,
+std::string ExtractorPPCallbacks::AddFile(clang::FileEntryRef file,
                                           llvm::StringRef file_name,
                                           llvm::StringRef search_path,
                                           llvm::StringRef relative_path) {
-  CHECK(!current_files_.top().file_path.empty());
+  const auto& top_path = current_files_.top().file_path;
+  CHECK(!top_path.empty());
   const auto search_path_entry =
       source_manager_->getFileManager().getDirectory(search_path);
-  const auto current_file_parent_entry =
-      (*source_manager_->getFileManager().getFile(
-           current_files_.top().file_path.c_str()))
-          ->getDir();
+  llvm::Expected<clang::FileEntryRef> file_or =
+      source_manager_->getFileManager().getFileRef(top_path);
+  const auto current_file_parent_entry = file_or ? file_or->getDir() : nullptr;
   // If the include file was found relatively to the current file's parent
   // directory or a search path, we need to normalize it. This is necessary
   // because llvm internalizes the path by which an inode was first accessed,
@@ -889,10 +944,9 @@ std::string ExtractorPPCallbacks::AddFile(const clang::FileEntry* file,
   // we will get an error when we replay the compilation, as the virtual
   // file system is not aware of inodes.
   llvm::SmallString<1024> out_name;
-  if (*search_path_entry == current_file_parent_entry) {
-    auto parent =
-        llvm::sys::path::parent_path(current_files_.top().file_path.c_str())
-            .str();
+  if (!search_path_entry.getError() &&
+      *search_path_entry == current_file_parent_entry) {
+    auto parent = llvm::sys::path::parent_path(top_path).str();
 
     // If the file is a top level file ("file.cc"), we normalize to a path
     // relative to "./".
@@ -903,21 +957,22 @@ std::string ExtractorPPCallbacks::AddFile(const clang::FileEntry* file,
     // Otherwise we take the literal path as we stored it for the current
     // file, and append the relative path.
     out_name = parent;
-    llvm::sys::path::append(out_name, relative_path);
+    llvm::sys::path::append(out_name, NormalizePath(relative_path));
   } else if (!search_path.empty()) {
     out_name = search_path;
-    llvm::sys::path::append(out_name, relative_path);
+    llvm::sys::path::append(out_name, NormalizePath(relative_path));
   } else {
-    CHECK(llvm::sys::path::is_absolute(file_name)) << file_name.str();
+    CHECK(IsSpecialBufferName(top_path) ||
+          llvm::sys::path::is_absolute(file_name))
+        << StreamAdapter::Stream(file_name);
     out_name = file_name;
   }
-  std::string out_name_string(out_name.str());
-  AddFile(file, out_name_string);
-  return out_name_string;
+  return AddFile(file, out_name);
 }
 
-const clang::FileEntry* ExtractorPPCallbacks::GetMainFile() {
-  return source_manager_->getFileEntryForID(source_manager_->getMainFileID());
+clang::OptionalFileEntryRef ExtractorPPCallbacks::GetMainFile() {
+  return source_manager_->getFileEntryRefForID(
+      source_manager_->getMainFileID());
 }
 
 RunningHash* ExtractorPPCallbacks::history() {
@@ -939,9 +994,9 @@ void ExtractorPPCallbacks::HandleKytheMetadataPragma(
   llvm::SmallString<1024> search_path;
   llvm::SmallString<1024> relative_path;
   llvm::SmallString<1024> filename;
-  if (const clang::FileEntry* file = LookupFileForIncludePragma(
+  if (clang::OptionalFileEntryRef file = LookupFileForIncludePragma(
           &preprocessor, &search_path, &relative_path, &filename)) {
-    AddFile(file, filename, search_path, relative_path);
+    AddFile(*file, file->getNameAsRequested(), search_path, relative_path);
   }
 }
 
@@ -955,10 +1010,10 @@ class ExtractorAction : public clang::PreprocessorFrontendAction {
     const auto inputs = getCompilerInstance().getFrontendOpts().Inputs;
     CHECK_EQ(1, inputs.size())
         << "Expected to see only one TU; instead saw " << inputs.size() << ".";
-    main_source_file_ = std::string(inputs[0].getFile());
+    main_source_file_ = NormalizePath(std::string(inputs[0].getFile()));
     auto* preprocessor = &getCompilerInstance().getPreprocessor();
     preprocessor->addPPCallbacks(
-        absl::make_unique<ExtractorPPCallbacks>(ExtractorState{
+        std::make_unique<ExtractorPPCallbacks>(ExtractorState{
             index_writer_, &getCompilerInstance().getSourceManager(),
             preprocessor, &main_source_file_, &main_source_file_transcript_,
             &source_files_, &main_source_file_stdin_alternate_}));
@@ -991,6 +1046,13 @@ class ExtractorAction : public clang::PreprocessorFrontendAction {
               getCompilerInstance().getDiagnostics().hasErrorOccurred());
   }
 
+ protected:
+  bool PrepareToExecuteAction(clang::CompilerInstance& CI) override {
+    CI.getPreprocessorOpts().DisablePCHOrModuleValidation =
+        clang::DisableValidationForModuleKind::All;
+    return clang::PreprocessorFrontendAction::PrepareToExecuteAction(CI);
+  }
+
  private:
   ExtractorCallback callback_;
   /// The main source file for the compilation (assuming only one).
@@ -1017,7 +1079,7 @@ void KzipWriterSink::OpenIndex(const std::string& unit_hash) {
   std::string path = path_type_ == OutputPathType::SingleFile
                          ? path_
                          : JoinPath(path_, unit_hash + ".kzip");
-  writer_ = IndexWriter(OpenKzipWriterOrDie(path));
+  writer_ = OpenKzipWriterOrDie(path);
 }
 
 void KzipWriterSink::WriteHeader(const kythe::proto::CompilationUnit& header) {
@@ -1033,7 +1095,8 @@ void KzipWriterSink::WriteFileContent(const kythe::proto::FileData& file) {
   if (auto digest = writer_->WriteFile(file.content()); digest.ok()) {
     if (!file.info().digest().empty() && file.info().digest() != *digest) {
       LOG(WARNING) << "Wrote FileData with mismatched digests: "
-                   << file.info().ShortDebugString() << " != " << *digest;
+                   << google::protobuf::ShortFormat(file.info())
+                   << " != " << *digest;
     }
   } else {
     LOG(ERROR) << "Error writing filedata: " << digest.status();
@@ -1059,36 +1122,43 @@ bool CompilationWriter::SetVNameConfiguration(const std::string& json) {
   return true;
 }
 
-kythe::proto::VName CompilationWriter::VNameForPath(const std::string& path) {
-  kythe::proto::VName out = vname_generator_.LookupVName(path);
+kythe::proto::VName CompilationWriter::VNameForPath(const RootPath& path) {
+  kythe::proto::VName out = vname_generator_.LookupVName(path.value());
   if (out.corpus().empty()) {
     out.set_corpus(corpus_);
   }
   return out;
 }
 
-std::string CompilationWriter::RelativizePath(absl::string_view path) {
+kythe::proto::VName CompilationWriter::VNameForPath(absl::string_view path) {
+  return VNameForPath(RootRelativePath(path));
+}
+
+CompilationWriter::RootPath CompilationWriter::RootRelativePath(
+    absl::string_view path) {
   // Don't attempt to relativize builtin resource paths.
   if (absl::StartsWith(path, kBuiltinResourceDirectory)) {
-    return std::string(path);
+    return RootPath{std::string(path)};
   }
 
   if (!canonicalizer_.has_value()) {
     if (absl::StatusOr<PathCanonicalizer> canonicalizer =
-            PathCanonicalizer::Create(root_directory_, path_policy_);
+            PathCanonicalizer::Create(root_directory_, path_policy_,
+                                      path_policy_overrides_);
         canonicalizer.ok()) {
       canonicalizer_ = *std::move(canonicalizer);
     } else {
-      LOG(INFO) << "Error making relative path: " << canonicalizer.status();
-      return std::string(path);
+      LOG(INFO) << "Error making root relative path: "
+                << canonicalizer.status();
+      return RootPath{std::string(path)};
     }
   }
   if (absl::StatusOr<std::string> relative = canonicalizer_->Relativize(path);
       relative.ok()) {
-    return *std::move(relative);
+    return RootPath{*std::move(relative)};
   } else {
-    LOG(INFO) << "Error making relative path: " << relative.status();
-    return std::string(path);
+    LOG(INFO) << "Error making root relative path: " << relative.status();
+    return RootPath{std::string(path)};
   }
 }
 
@@ -1105,9 +1175,9 @@ void CompilationWriter::FillFileInput(
   // We need to use something other than "-", since clang special-cases
   // it. (clang also refers to standard input as <stdin>, so we're
   // consistent there.)
-  file_info->set_path(clang_path == "-" ? "<stdin>" : clang_path);
-  file_info->set_digest(Sha256(source_file.file_content.c_str(),
-                               source_file.file_content.size()));
+  file_info->set_path(IsStdinPath(clang_path) ? "<stdin>" : clang_path);
+  file_info->set_digest(
+      Sha256Hasher(source_file.file_content).FinishHexString());
   AddFileContext(source_file, file_input);
 }
 
@@ -1135,11 +1205,11 @@ void CompilationWriter::InsertExtraIncludes(
     extra_data_.emplace_back();
     auto* file_content = &extra_data_.back();
     auto* required_input = unit->add_required_input();
-    required_input->mutable_v_name()->CopyFrom(VNameForPath(normalized));
+    *required_input->mutable_v_name() = VNameForPath(path);
     required_input->mutable_info()->set_path(path);
     required_input->mutable_info()->set_digest(
-        Sha256((*buffer)->getBufferStart(), (*buffer)->getBufferSize()));
-    file_content->mutable_info()->CopyFrom(required_input->info());
+        Sha256Hasher((*buffer)->getBuffer()).FinishHexString());
+    *file_content->mutable_info() = required_input->info();
     file_content->mutable_content()->assign((*buffer)->getBufferStart(),
                                             (*buffer)->getBufferEnd());
   }
@@ -1162,8 +1232,8 @@ void CompilationWriter::InsertExtraIncludes(
     std::string child_dir = find_child(status_checked_paths_, path);
     std::string path_slash = absl::StrCat(path, "/");
     if ((!child_file.empty() || !child_dir.empty()) &&
-        !llvm::StringRef(child_file).startswith(path_slash) &&
-        !llvm::StringRef(child_dir).startswith(path_slash)) {
+        !llvm::StringRef(child_file).starts_with(path_slash) &&
+        !llvm::StringRef(child_dir).starts_with(path_slash)) {
       details->add_stat_path()->set_path(path);
     }
   }
@@ -1178,14 +1248,14 @@ void CompilationWriter::CancelPreviouslyOpenedFiles() {
 }
 
 void CompilationWriter::OpenedForRead(const std::string& path) {
-  if (!llvm::StringRef(path).startswith(kBuiltinResourceDirectory)) {
-    extra_includes_.insert(path);
+  if (!llvm::StringRef(path).starts_with(kBuiltinResourceDirectory)) {
+    extra_includes_.insert(NormalizePath(path));
   }
 }
 
 void CompilationWriter::DirectoryOpenedForStatus(const std::string& path) {
-  if (!llvm::StringRef(path).startswith(kBuiltinResourceDirectory)) {
-    status_checked_paths_.insert(RelativizePath(path));
+  if (!llvm::StringRef(path).starts_with(kBuiltinResourceDirectory)) {
+    status_checked_paths_.insert(NormalizePath(path));
   }
 }
 
@@ -1196,7 +1266,7 @@ void CompilationWriter::ScrubIntermediateFiles(
   }
   for (auto set : {&extra_includes_, &status_checked_paths_}) {
     for (auto it = set->begin(); it != set->end();) {
-      if (llvm::StringRef(*it).startswith(options.ModuleCachePath)) {
+      if (llvm::StringRef(*it).starts_with(options.ModuleCachePath)) {
         it = set->erase(it);
       } else {
         ++it;
@@ -1210,8 +1280,7 @@ void CompilationWriter::WriteIndex(
     std::unique_ptr<CompilationWriterSink> sink,
     const std::string& main_source_file, const std::string& entry_context,
     const std::unordered_map<std::string, SourceFile>& source_files,
-    const HeaderSearchInfo* header_search_info, bool had_errors,
-    const std::string& clang_working_dir) {
+    const HeaderSearchInfo* header_search_info, bool had_errors) {
   kythe::proto::CompilationUnit unit;
   std::string identifying_blob;
   identifying_blob.append(corpus_);
@@ -1241,7 +1310,7 @@ void CompilationWriter::WriteIndex(
   }
   identifying_blob.append(main_source_file);
   std::string identifying_blob_digest =
-      Sha256(identifying_blob.c_str(), identifying_blob.size());
+      Sha256Hasher(identifying_blob).FinishHexString();
   auto* unit_vname = unit.mutable_v_name();
 
   kythe::proto::VName main_vname = VNameForPath(main_source_file);
@@ -1282,15 +1351,13 @@ void CompilationWriter::WriteIndex(
   unit.set_has_compile_errors(had_errors);
   unit.add_source_file(main_source_file);
   unit.set_output_key(output_file);  // may be empty; that's OK
-  llvm::SmallString<256> absolute_working_directory(
-      llvm::StringRef(clang_working_dir.data(), clang_working_dir.size()));
-  std::error_code err =
-      llvm::sys::fs::make_absolute(absolute_working_directory);
-  if (err) {
-    LOG(WARNING) << "Can't get working directory: " << err.message();
+  if (absl::StatusOr<std::string> working_directory = GetCurrentDirectory();
+      !working_directory.ok()) {
+    LOG(WARNING) << "Can't get working directory: "
+                 << working_directory.status();
   } else {
     unit.set_working_directory(
-        FindStableRoot(absolute_working_directory.c_str(), unit.argument(),
+        FindStableRoot(*working_directory, unit.argument(),
                        unit.required_input(), cxx_details));
   }
   sink->OpenIndex(identifying_blob_digest);
@@ -1311,9 +1378,10 @@ void CompilationWriter::WriteIndex(
 
 std::unique_ptr<clang::FrontendAction> NewExtractor(
     CompilationWriter* index_writer, ExtractorCallback callback) {
-  return absl::make_unique<ExtractorAction>(index_writer, std::move(callback));
+  return std::make_unique<ExtractorAction>(index_writer, std::move(callback));
 }
 
+namespace {
 llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> MapCompilerResources(
     llvm::StringRef map_directory) {
   llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> memory_fs(
@@ -1346,13 +1414,6 @@ llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> GetRootFileSystem(
   return llvm::vfs::getRealFileSystem();
 }
 
-void ExtractorConfiguration::SetVNameConfig(const std::string& path) {
-  if (!index_writer_.SetVNameConfiguration(LoadFileOrDie(path))) {
-    absl::FPrintF(stderr, "Couldn't configure vnames from %s\n", path);
-    exit(1);
-  }
-}
-
 bool IsCuda(const std::vector<std::string>& args) {
   for (int i = 0; i < args.size() - 1; i++) {
     if (args[i] == "-x" && args[i + 1] == "cuda") {
@@ -1360,6 +1421,15 @@ bool IsCuda(const std::vector<std::string>& args) {
     }
   }
   return false;
+}
+
+}  // namespace
+
+void ExtractorConfiguration::SetVNameConfig(const std::string& path) {
+  if (!index_writer_.SetVNameConfiguration(LoadFileOrDie(path))) {
+    absl::FPrintF(stderr, "Couldn't configure vnames from %s\n", path);
+    exit(1);
+  }
 }
 
 void ExtractorConfiguration::SetArgs(const std::vector<std::string>& args) {
@@ -1389,7 +1459,7 @@ void ExtractorConfiguration::SetArgs(const std::vector<std::string>& args) {
   // invent one. We need this to find stddef.h and friends.
   for (const auto& arg : final_args_) {
     // Handle both -resource-dir=foo and -resource-dir foo.
-    if (llvm::StringRef(arg).startswith("-resource-dir")) {
+    if (llvm::StringRef(arg).starts_with("-resource-dir")) {
       map_builtin_resources_ = false;
       break;
     }
@@ -1489,9 +1559,8 @@ bool ExtractorConfiguration::Extract(
     std::unique_ptr<CompilationWriterSink> sink) {
   llvm::IntrusiveRefCntPtr<clang::FileManager> file_manager(
       new clang::FileManager(
-          file_system_options_,
-          new RecordingFS(GetRootFileSystem(map_builtin_resources_),
-                          &index_writer_)));
+          {}, new RecordingFS(GetRootFileSystem(map_builtin_resources_),
+                              &index_writer_)));
   index_writer_.set_target_name(target_name_);
   index_writer_.set_rule_type(rule_type_);
   index_writer_.set_build_config(build_config_);
@@ -1505,7 +1574,7 @@ bool ExtractorConfiguration::Extract(
           const HeaderSearchInfo* header_search_info, bool had_errors) {
         index_writer_.WriteIndex(lang, std::move(sink), main_source_file,
                                  transcript, source_files, header_search_info,
-                                 had_errors, file_system_options_.WorkingDir);
+                                 had_errors);
       });
   clang::tooling::ToolInvocation invocation(final_args_, std::move(extractor),
                                             file_manager.get());
@@ -1517,10 +1586,10 @@ bool ExtractorConfiguration::Extract(supported_language::Language lang) {
   if (!output_file_.empty()) {
     CHECK(absl::EndsWith(output_file_, ".kzip"))
         << "Output file must have '.kzip' extension";
-    sink = absl::make_unique<KzipWriterSink>(
+    sink = std::make_unique<KzipWriterSink>(
         output_file_, KzipWriterSink::OutputPathType::SingleFile);
   } else {
-    sink = absl::make_unique<KzipWriterSink>(
+    sink = std::make_unique<KzipWriterSink>(
         output_directory_, KzipWriterSink::OutputPathType::Directory);
   }
 

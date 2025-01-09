@@ -18,7 +18,7 @@ syntax = "proto3";
 
 package kythe.proto.serving;
 
-option go_package = "serving_go_proto";
+option go_package = "kythe.io/kythe/proto/serving_go_proto";
 option java_package = "com.google.devtools.kythe.proto";
 
 import "kythe/proto/common.proto";
@@ -110,6 +110,12 @@ message FileDirectory {
     // Set of known build configurations of this FILE or all files recursively
     // contained in/below this DIRECTORY.
     repeated string build_config = 3;
+
+    // True if this entry is generated.
+    bool generated = 4;
+
+    // Whether the FILE Entry did not have an associated text fact.
+    bool missing_text = 5;
   }
   enum Kind {
     UNKNOWN = 0;
@@ -137,7 +143,7 @@ message CorpusRoots {
 // A File is a specialized Node structure for file nodes.
 message File {
   string ticket = 1;
-  bytes text = 2;
+  optional bytes text = 2;
   string encoding = 3;
 
   FileInfo info = 4;
@@ -186,6 +192,10 @@ message FileInfo {
   // Hash of the file contents; the algorithm of the hash may differ between
   // corpora based on the repository from which they were extracted.
   kythe.proto.common.Hash hash = 3;
+
+  // Signifies whether there are restrictions for viewing this file in some
+  // context.
+  bool view_restricted = 4;
 }
 
 // FileDecorations stores a file's contents and all contained anchor edges.
@@ -269,6 +279,20 @@ message PagedCrossReferences {
     int32 ordinal = 2;
   }
 
+  // References to the source node with an associated semantic scope.
+  message ScopedReference {
+    // The definition anchor covering the semantic scope.
+    ExpandedAnchor scope = 1;
+    // The semantic ticket for the scope.
+    string semantic_scope = 2;
+
+    // MarkedSource for the scope.
+    kythe.proto.common.MarkedSource marked_source = 3;
+
+    // Specific locations within the scope that reference the source node.
+    repeated ExpandedAnchor reference = 4;
+  }
+
   // Caller of the source node with all associated callsites within the caller.
   message Caller {
     // The anchor covering the caller.
@@ -294,6 +318,7 @@ message PagedCrossReferences {
     repeated ExpandedAnchor anchor = 2;
     repeated RelatedNode related_node = 3;
     repeated Caller caller = 4;
+    repeated ScopedReference scoped_reference = 7;
 
     // List of files referenced in the group
     repeated FileInfo file_info = 6;
@@ -321,11 +346,36 @@ message PagedCrossReferences {
 
   // Whether the source node is incomplete.  This changes whether
   // /kythe/edge/defines edges are considered declarations or definitions.
-  // /kythe/edge/completes edges are always grouped as definitions.
+  // /kythe/edge/completedby edges are always grouped as definitions.
   bool incomplete = 5;
 
   // The source node's MarkedSource.
   kythe.proto.common.MarkedSource marked_source = 6;
+
+  message PageSearchIndex {
+    message Pages {
+      // Set of page indices.
+      //
+      // These indices are sorted and then encoded as the difference between
+      // consecutive elements.
+      //
+      // Example:
+      //   [2, 5, 6] would be encoded here as [2, 3, 1]
+      repeated uint32 page_index = 1 [packed = true];
+    }
+    message Postings {
+      // trigram -> set of pages containing trigram
+      map<uint32, Pages> index = 1;
+    }
+
+    Postings by_corpus = 1;
+    Postings by_root = 2;
+    Postings by_path = 3;
+    Postings by_resolved_path = 4;
+  }
+
+  // Trigram search index for this set's xref Pages.
+  PageSearchIndex page_search_index = 11;
 }
 
 // A single node's documentation for the xrefs Documentation API.
@@ -361,6 +411,11 @@ message IdentifierMatch {
   message Node {
     // Kythe ticket for the matched node.
     string ticket = 1;
+
+    // Ticket for the canonical node, if there is one. For example, if there is
+    // a definition node and a declaration node only one will be the canonical
+    // node.
+    string canonical_node_ticket = 4;
 
     // Kind of the node being referenced.
     string node_kind = 2;
@@ -408,4 +463,20 @@ message Callgraph {
   repeated string tickets = 1;
 
   Type type = 2;
+}
+
+// A Diff is a lossy, offset-only representation of a diff between two texts.
+message Diff {
+  enum Type {
+    EQUAL = 0;
+    INSERT = 1;
+    DELETE = 2;
+  }
+
+  // Parallel array of diff spans so the values are packed.
+  repeated int32 span_length = 1 [packed = true];
+  repeated Type span_type = 2 [packed = true];
+  repeated int32 span_newlines = 3 [packed = true];
+  repeated int32 span_first_newline = 4 [packed = true];
+  repeated int32 span_last_newline = 5 [packed = true];
 }

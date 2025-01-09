@@ -26,9 +26,10 @@
 // behavior.
 //
 // Usage:
-//   kwazthis --path kythe/cxx/tools/kindex_tool_main.cc --offset 2660
-//   kwazthis --path kythe/cxx/common/CommandLineUtils.cc --line 81 --column 27
-//   kwazthis --path kythe/java/com/google/devtools/kythe/analyzers/base/EntrySet.java --offset 2815
+//
+//	kwazthis --path kythe/cxx/tools/kindex_tool_main.cc --offset 2660
+//	kwazthis --path kythe/cxx/common/CommandLineUtils.cc --line 81 --column 27
+//	kwazthis --path kythe/java/com/google/devtools/kythe/analyzers/base/EntrySet.java --offset 2815
 package main
 
 import (
@@ -36,7 +37,6 @@ import (
 	"encoding/json"
 	"flag"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,6 +48,7 @@ import (
 	"kythe.io/kythe/go/serving/api"
 	"kythe.io/kythe/go/util/flagutil"
 	"kythe.io/kythe/go/util/kytheuri"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/schema"
 	"kythe.io/kythe/go/util/schema/edges"
 	"kythe.io/kythe/go/util/schema/facts"
@@ -223,12 +224,12 @@ func main() {
 			Ticket: []string{ref.TargetTicket},
 			Kind:   []string{edges.Named, edges.Typed, definedAtEdge, definedBindingAtEdge},
 		}); err != nil {
-			log.Printf("WARNING: error getting edges for %q: %v", ref.TargetTicket, err)
+			log.Warningf("error getting edges for %q: %v", ref.TargetTicket, err)
 		} else {
 			matching := graph.EdgesMap(eReply.EdgeSets)[ref.TargetTicket]
 			for name := range matching[edges.Named] {
 				if uri, err := kytheuri.Parse(name); err != nil {
-					log.Printf("WARNING: named node ticket (%q) could not be parsed: %v", name, err)
+					log.Warningf("named node ticket (%q) could not be parsed: %v", name, err)
 				} else {
 					r.Node.Names = append(r.Node.Names, uri.Signature)
 				}
@@ -247,7 +248,7 @@ func main() {
 				for defAnchor := range defs {
 					def, err := completeDefinition(defAnchor)
 					if err != nil {
-						log.Printf("WARNING: failed to complete definition for %q: %v", defAnchor, err)
+						log.Warningf("failed to complete definition for %q: %v", defAnchor, err)
 					} else {
 						r.Node.Definitions = append(r.Node.Definitions, def)
 					}

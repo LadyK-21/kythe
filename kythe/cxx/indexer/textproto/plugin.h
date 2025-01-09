@@ -21,6 +21,7 @@
 #include <string>
 
 #include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "kythe/cxx/common/indexing/KytheGraphRecorder.h"
 #include "kythe/proto/analysis.pb.h"
 
@@ -42,6 +43,16 @@ class PluginApi {
   // Adds an anchor for the text span and returns its VName.
   virtual proto::VName CreateAndAddAnchorNode(const proto::VName& file_vname,
                                               absl::string_view sp) = 0;
+
+  // Adds an anchor for a substring of the text span and returns its VName.
+  virtual proto::VName CreateAndAddAnchorNode(const proto::VName& file_vname,
+                                              absl::string_view sp, int pos,
+                                              int len) = 0;
+
+  // Adds an anchor for a substring of the text span and returns its VName.
+  virtual proto::VName CreateAndAddAnchorNode(const proto::VName& file_vname,
+                                              absl::string_view sp,
+                                              int pos) = 0;
 
   virtual KytheGraphRecorder* recorder() = 0;
 
@@ -69,7 +80,7 @@ struct StringToken {
   absl::string_view source_text;
 };
 
-// Superclass for all plugins. A new plugin is instantated for each textproto
+// Superclass for all plugins. A new plugin is instantiated for each textproto
 // handled by the indexer.
 class Plugin {
  public:
@@ -93,6 +104,15 @@ class Plugin {
       PluginApi* api, const proto::VName& file_vname,
       const google::protobuf::FieldDescriptor& field,
       const std::vector<StringToken>& tokens) = 0;
+
+  // Optional entrypoint for integer fields. Plugin may override it to add
+  // additional nodes for integer fields.
+  virtual absl::Status AnalyzeIntegerField(
+      PluginApi* api, const proto::VName& file_vname,
+      const google::protobuf::FieldDescriptor& field,
+      absl::string_view field_value) {
+    return absl::OkStatus();
+  }
 
  protected:
   Plugin(const Plugin&) = delete;

@@ -17,26 +17,32 @@
 #include "kythe/cxx/extractor/testlib.h"
 
 #include <errno.h>
-#include <stdlib.h>
+#include <unistd.h>
 
-#include <iostream>
+#include <cstddef>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "glog/logging.h"
-#include "gmock/gmock.h"
+#include "absl/utility/utility.h"
+#include "google/protobuf/any.pb.h"
 #include "google/protobuf/message.h"
 #include "google/protobuf/text_format.h"
-#include "google/protobuf/util/message_differencer.h"
 #include "gtest/gtest.h"
 #include "kythe/cxx/common/kzip_reader.h"
 #include "kythe/cxx/common/path_utils.h"
 #include "kythe/proto/analysis.pb.h"
 #include "kythe/proto/cxx.pb.h"
 #include "kythe/proto/filecontext.pb.h"
-#include "llvm/ADT/None.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Program.h"
 #include "tools/cpp/runfiles/runfiles.h"
 
@@ -44,7 +50,7 @@ namespace kythe {
 namespace {
 namespace gpb = ::google::protobuf;
 namespace kpb = ::kythe::proto;
-using HashMap = ::absl::flat_hash_map<gpb::string, std::size_t>;
+using HashMap = ::absl::flat_hash_map<std::string, std::size_t>;
 using ::bazel::tools::cpp::runfiles::Runfiles;
 
 // Path prefix joined to runfiles to form the workspace-relative path.
@@ -53,41 +59,17 @@ constexpr absl::string_view kWorkspaceRoot = "io_kythe";
 constexpr absl::string_view kExtractorPath =
     "kythe/cxx/extractor/cxx_extractor";
 
-void CanonicalizeHash(HashMap* hashes, gpb::string* hash) {
+void CanonicalizeHash(HashMap* hashes, std::string* hash) {
   auto inserted = hashes->insert({*hash, hashes->size()});
   *hash = absl::StrCat("hash", inserted.first->second);
 }
 
-class EquivToCompilationImpl
-    : public ::testing::MatcherInterface<const kpb::CompilationUnit&> {
- public:
-  explicit EquivToCompilationImpl(kpb::CompilationUnit expected)
-      : expected_(std::move(expected)) {}
-
-  bool MatchAndExplain(
-      const kpb::CompilationUnit& actual,
-      ::testing::MatchResultListener* listener) const override {
-    std::string delta;
-    if (!EquivalentCompilations(expected_, actual, &delta)) {
-      *listener << "\n" << delta;
-      return false;
-    }
-    return true;
-  }
-
-  void DescribeTo(std::ostream* os) const override {
-    *os << "kythe::proto::CompilationUnit differs";
-  }
-
- private:
-  kpb::CompilationUnit expected_;
-};
-
 /// \brief Range wrapper around ContextDependentVersion, if any.
 class MutableContextRows {
  public:
-  using iterator = decltype(
-      std::declval<kpb::ContextDependentVersion>().mutable_row()->begin());
+  using iterator = decltype(std::declval<kpb::ContextDependentVersion>()
+                                .mutable_row()
+                                ->begin());
   explicit MutableContextRows(kpb::CompilationUnit::FileInput* file_input) {
     for (gpb::Any& detail : *file_input->mutable_details()) {
       if (detail.UnpackTo(&context_)) {
@@ -207,9 +189,8 @@ bool ExecuteAndWait(const std::string& program,
   std::string error;
   bool execution_failed = false;
   int exit_code = llvm::sys::ExecuteAndWait(
-      program, VectorForExecute(argv),
-      llvm::makeArrayRef(VectorForExecute(env)),
-      /* Redirects */ llvm::None,
+      program, VectorForExecute(argv), VectorForExecute(env),
+      /* Redirects */ std::nullopt,
       /* SecondsToWait */ 0, /* MemoryLimit */ 0, &error, &execution_failed);
   if (!error.empty() || execution_failed || exit_code != 0) {
     LOG(ERROR) << "unable to run extractor (" << exit_code << "): " << error;
@@ -232,13 +213,13 @@ void CanonicalizeHashes(kpb::CompilationUnit* unit) {
   }
 }
 
-absl::optional<std::vector<kpb::CompilationUnit>> ExtractCompilations(
+std::optional<std::vector<kpb::CompilationUnit>> ExtractCompilations(
     ExtractorOptions options) {
   gpb::LinkMessageReflection<kpb::CxxCompilationUnitDetails>();
 
   options.environment.insert({"KYTHE_EXCLUDE_EMPTY_DIRS", "1"});
   options.environment.insert({"KYTHE_EXCLUDE_AUTOCONFIGURATION_FILES", "1"});
-  if (absl::optional<std::string> extractor = ResolveRunfiles(kExtractorPath)) {
+  if (std::optional<std::string> extractor = ResolveRunfiles(kExtractorPath)) {
     TemporaryKzipFile output_file;
     options.environment.insert({"KYTHE_OUTPUT_FILE", output_file.filename()});
 
@@ -248,7 +229,7 @@ absl::optional<std::vector<kpb::CompilationUnit>> ExtractCompilations(
                        FlattenEnvironment(options.environment),
                        options.working_directory)) {
       if (auto reader = KzipReader::Open(output_file.filename()); reader.ok()) {
-        absl::optional<std::vector<kpb::CompilationUnit>> result(
+        std::optional<std::vector<kpb::CompilationUnit>> result(
             absl::in_place);  // Default construct a result vector.
 
         auto status = reader->Scan([&](absl::string_view digest) {
@@ -264,38 +245,38 @@ absl::optional<std::vector<kpb::CompilationUnit>> ExtractCompilations(
         });
         if (!status.ok()) {
           LOG(ERROR) << "Unable to read compilations: " << status;
-          return absl::nullopt;
+          return std::nullopt;
         }
         return result;
       } else {
         LOG(ERROR) << "Unable to open " << output_file.filename() << ": "
                    << reader.status();
       }
-      return absl::nullopt;
+      return std::nullopt;
     }
 
   } else {
     LOG(ERROR) << "Unable to resolve extractor path";
   }
-  return absl::nullopt;
+  return std::nullopt;
 }
 
-absl::optional<std::string> ResolveRunfiles(absl::string_view path) {
+std::optional<std::string> ResolveRunfiles(absl::string_view path) {
   std::string error;
   std::unique_ptr<Runfiles> runfiles(Runfiles::CreateForTest(&error));
   if (runfiles == nullptr) {
     LOG(ERROR) << error;
-    return absl::nullopt;
+    return std::nullopt;
   }
   std::string resolved = runfiles->Rlocation(JoinPath(kWorkspaceRoot, path));
   if (resolved.empty()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   return resolved;
 }
 
 kpb::CompilationUnit ExtractSingleCompilationOrDie(ExtractorOptions options) {
-  if (absl::optional<std::vector<kpb::CompilationUnit>> result =
+  if (std::optional<std::vector<kpb::CompilationUnit>> result =
           ExtractCompilations(std::move(options))) {
     CHECK(result->size() == 1)
         << "unexpected number of extracted compilations: " << result->size();
@@ -305,30 +286,9 @@ kpb::CompilationUnit ExtractSingleCompilationOrDie(ExtractorOptions options) {
   }
 }
 
-bool EquivalentCompilations(const kpb::CompilationUnit& lhs,
-                            const kpb::CompilationUnit& rhs,
-                            std::string* delta) {
-  gpb::util::MessageDifferencer diff;
-  diff.set_message_field_comparison(gpb::util::MessageDifferencer::EQUIVALENT);
-  diff.ReportDifferencesToString(delta);
-  return diff.Compare(lhs, rhs);
-}
-
 kpb::CompilationUnit ParseTextCompilationUnitOrDie(absl::string_view text) {
   kpb::CompilationUnit result;
   CHECK(gpb::TextFormat::ParseFromString(std::string(text), &result));
   return result;
 }
-
-::testing::Matcher<const kpb::CompilationUnit&> EquivToCompilation(
-    const kpb::CompilationUnit& unit) {
-  return ::testing::Matcher<const kpb::CompilationUnit&>(
-      new EquivToCompilationImpl(unit));
-}
-
-::testing::Matcher<const kpb::CompilationUnit&> EquivToCompilation(
-    absl::string_view expected) {
-  return EquivToCompilation(ParseTextCompilationUnitOrDie(expected));
-}
-
 }  // namespace kythe

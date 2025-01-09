@@ -20,28 +20,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <cstdint>
 #include <memory>
 #include <set>
 #include <string>
 #include <utility>
 
 #include "IndexerFrontendAction.h"
-#include "absl/memory/memory.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/Tooling.h"
-#include "google/protobuf/stubs/common.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "kythe/cxx/common/indexing/KytheGraphRecorder.h"
 #include "kythe/cxx/common/indexing/RecordingOutputStream.h"
 #include "kythe/cxx/indexer/cxx/IndexerASTHooks.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "protobuf-matchers/protocol-buffer-matchers.h"
 
 namespace kythe {
 namespace {
+using ::protobuf_matchers::EqualsProto;
 
 using clang::SourceLocation;
 
@@ -50,7 +52,7 @@ class AnchorMarkTest : public ::testing::Test {
   class EmptyToken : public GraphObserver::ClaimToken {
    public:
     std::string StampIdentity(const std::string&) const override { return ""; }
-    void* GetClass() const override { return nullptr; }
+    uintptr_t GetClass() const override { return 0; }
     bool operator==(const ClaimToken&) const override { return false; }
     bool operator!=(const ClaimToken&) const override { return true; }
   };
@@ -186,7 +188,7 @@ TEST(KytheIndexerUnitTest, GraphRecorderNodeKind) {
   ASSERT_TRUE(entry.edge_kind().empty());
   ASSERT_FALSE(entry.has_target());
   ASSERT_TRUE(entry.has_source());
-  ASSERT_EQ(vname.DebugString(), entry.source().DebugString());
+  ASSERT_THAT(vname, EqualsProto(entry.source()));
 }
 
 TEST(KytheIndexerUnitTest, GraphRecorderNodeProperty) {
@@ -216,7 +218,7 @@ TEST(KytheIndexerUnitTest, GraphRecorderNodeProperty) {
     ASSERT_TRUE(entry.edge_kind().empty());
     ASSERT_FALSE(entry.has_target());
     ASSERT_TRUE(entry.has_source());
-    ASSERT_EQ(vname.DebugString(), entry.source().DebugString());
+    ASSERT_THAT(vname, EqualsProto(entry.source()));
   }
   ASSERT_TRUE(found_kind_fact);
   ASSERT_TRUE(found_property_fact);
@@ -246,8 +248,8 @@ TEST(KytheIndexerUnitTest, GraphRecorderEdge) {
   ASSERT_EQ("/kythe/edge/defines/binding", entry.edge_kind());
   ASSERT_TRUE(entry.has_target());
   ASSERT_TRUE(entry.has_source());
-  ASSERT_EQ(vname_source.DebugString(), entry.source().DebugString());
-  ASSERT_EQ(vname_target.DebugString(), entry.target().DebugString());
+  ASSERT_THAT(vname_source, EqualsProto(entry.source()));
+  ASSERT_THAT(vname_target, EqualsProto(entry.target()));
 }
 
 TEST(KytheIndexerUnitTest, GraphRecorderEdgeOrdinal) {
@@ -273,13 +275,13 @@ TEST(KytheIndexerUnitTest, GraphRecorderEdgeOrdinal) {
   EXPECT_EQ("/kythe/edge/defines/binding.42", entry.edge_kind());
   ASSERT_TRUE(entry.has_target());
   ASSERT_TRUE(entry.has_source());
-  EXPECT_EQ(vname_source.DebugString(), entry.source().DebugString());
-  EXPECT_EQ(vname_target.DebugString(), entry.target().DebugString());
+  EXPECT_THAT(vname_source, EqualsProto(entry.source()));
+  EXPECT_THAT(vname_target, EqualsProto(entry.target()));
 }
 
-static void WriteStringToStackAndBuffer(const google::protobuf::string& value,
+static void WriteStringToStackAndBuffer(const std::string& value,
                                         kythe::BufferStack* stack,
-                                        google::protobuf::string* buffer) {
+                                        std::string* buffer) {
   unsigned char* bytes = stack->WriteToTop(value.size());
   memcpy(bytes, value.data(), value.size());
   if (buffer) {
@@ -289,7 +291,7 @@ static void WriteStringToStackAndBuffer(const google::protobuf::string& value,
 
 TEST(KytheIndexerUnitTest, BufferStackWrite) {
   kythe::BufferStack stack;
-  google::protobuf::string expected, actual;
+  std::string expected, actual;
   {
     google::protobuf::io::StringOutputStream stream(&actual);
     stack.Push(0);
@@ -305,7 +307,7 @@ TEST(KytheIndexerUnitTest, BufferStackWrite) {
 
 TEST(KytheIndexerUnitTest, BufferStackMergeDown) {
   kythe::BufferStack stack;
-  google::protobuf::string actual;
+  std::string actual;
   {
     google::protobuf::io::StringOutputStream stream(&actual);
     stack.Push(0);
@@ -344,7 +346,7 @@ TEST(KytheIndexerUnitTest, BufferStackMergeDown) {
 
 TEST(KytheIndexerUnitTest, BufferStackMergeFailures) {
   kythe::BufferStack stack;
-  google::protobuf::string actual;
+  std::string actual;
   {
     google::protobuf::io::StringOutputStream stream(&actual);
     ASSERT_FALSE(stack.MergeDownIfTooSmall(0, 2048));  // too few on the stack
@@ -382,8 +384,8 @@ TEST(KytheIndexerUnitTest, TrivialHappyCase) {
   LibrarySupports no_supports;
   IndexerOptions options{};
   std::unique_ptr<clang::FrontendAction> Action =
-      absl::make_unique<IndexerFrontendAction>(&observer, nullptr, &no_supports,
-                                               options);
+      std::make_unique<IndexerFrontendAction>(&observer, nullptr, &no_supports,
+                                              options);
   ASSERT_TRUE(
       RunToolOnCode(std::move(Action), "int main() {}", "valid_main.cc"));
 }
@@ -407,8 +409,8 @@ class PushPopLintingGraphObserver : public NullGraphObserver {
     if (File.isInvalid()) {
       FileNames.push("invalid-file");
     }
-    if (const clang::FileEntry* file_entry =
-            SourceManager->getFileEntryForID(File)) {
+    if (const clang::OptionalFileEntryRef file_entry =
+            SourceManager->getFileEntryRefForID(File)) {
       FileNames.push(std::string(file_entry->getName()));
     } else {
       FileNames.push("null-file");
@@ -441,8 +443,8 @@ TEST(KytheIndexerUnitTest, PushFilePopFileTracking) {
   LibrarySupports no_supports;
   IndexerOptions options{};
   std::unique_ptr<clang::FrontendAction> Action =
-      absl::make_unique<IndexerFrontendAction>(&Observer, nullptr, &no_supports,
-                                               options);
+      std::make_unique<IndexerFrontendAction>(&Observer, nullptr, &no_supports,
+                                              options);
   ASSERT_TRUE(RunToolOnCode(std::move(Action), "int i;", "main.cc"));
   ASSERT_FALSE(Observer.hadUnderrun());
   ASSERT_EQ(0, Observer.getFileNameStackSize());
@@ -454,7 +456,6 @@ TEST(KytheIndexerUnitTest, PushFilePopFileTracking) {
 }  // namespace kythe
 
 int main(int argc, char** argv) {
-  GOOGLE_PROTOBUF_VERIFY_VERSION;
   ::testing::InitGoogleTest(&argc, argv);
   int result = RUN_ALL_TESTS();
   google::protobuf::ShutdownProtobufLibrary();

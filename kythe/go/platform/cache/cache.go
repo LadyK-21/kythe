@@ -177,7 +177,7 @@ func (h countHeap) Swap(i, j int) {
 }
 
 // Push implements a method of heap.Interface.
-func (h *countHeap) Push(item interface{}) {
+func (h *countHeap) Push(item any) {
 	if e, ok := item.(*entry); ok {
 		n := len(*h)
 		e.index = n
@@ -186,7 +186,7 @@ func (h *countHeap) Push(item interface{}) {
 }
 
 // Pop implements a method of heap.Interface.
-func (h *countHeap) Pop() interface{} {
+func (h *countHeap) Pop() any {
 	if n := len(*h) - 1; n >= 0 {
 		e := (*h)[n]
 		e.index = -1
@@ -211,7 +211,7 @@ type ByteSize int
 func (b *ByteSize) String() string { return fmt.Sprintf("%d", *b) }
 
 // Get implements a method of the flag.Value interface.
-func (b *ByteSize) Get() interface{} { return *b }
+func (b *ByteSize) Get() any { return *b }
 
 // Set implements a method of the flag.Value interface.
 func (b *ByteSize) Set(s string) error {
@@ -228,19 +228,22 @@ func (b *ByteSize) Set(s string) error {
 // Returns -1 and an error in case of invalid format.
 //
 // The supported unit labels are:
-//  B    * 2^0  bytes
-//  K    * 2^10 bytes
-//  M    * 2^20 bytes
-//  G    * 2^30 bytes
-//  T    * 2^40 bytes
+//
+//	B    * 2^0  bytes
+//	K    * 2^10 bytes
+//	M    * 2^20 bytes
+//	G    * 2^30 bytes
+//	T    * 2^40 bytes
+//
 // The labels are case-insensitive ("10g" is the same as "10G")
 //
 // Examples:
-//  ParseByteSize("25")    ==> 25
-//  ParseByteSize("1k")    ==> 1024
-//  ParseByteSize("2.5G")  ==> 2684354560
-//  ParseByteSize("10.3k") ==> 10547
-//  ParseByteSize("-45xx") ==> -1 [error]
+//
+//	ParseByteSize("25")    ==> 25
+//	ParseByteSize("1k")    ==> 1024
+//	ParseByteSize("2.5G")  ==> 2684354560
+//	ParseByteSize("10.3k") ==> 10547
+//	ParseByteSize("-45xx") ==> -1 [error]
 func ParseByteSize(s string) (int, error) {
 	var value float64
 	var unit string

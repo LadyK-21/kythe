@@ -21,7 +21,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"regexp"
 
 	"kythe.io/kythe/go/services/xrefs"
@@ -30,6 +29,7 @@ import (
 	"kythe.io/kythe/go/storage/table"
 	"kythe.io/kythe/go/util/keys"
 	"kythe.io/kythe/go/util/kytheuri"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/schema"
 	"kythe.io/kythe/go/util/schema/facts"
 	"kythe.io/kythe/go/util/span"
@@ -56,7 +56,7 @@ const ColumnarTableKeyMarker = "kythe:columnar"
 func NewService(ctx context.Context, t keyvalue.DB) xrefs.Service {
 	_, err := t.Get(ctx, []byte(ColumnarTableKeyMarker), nil)
 	if err == nil {
-		log.Println("WARNING: detected a experimental columnar xrefs table")
+		log.WarningContext(ctx, "detected a experimental columnar xrefs table")
 		return NewColumnarTable(t)
 	}
 	return NewCombinedTable(&table.KVProto{t})
@@ -285,7 +285,7 @@ func (c *ColumnarTable) Decorations(ctx context.Context, req *xpb.DecorationsReq
 			if diag.Span == nil {
 				reply.Diagnostic = append(reply.Diagnostic, diag)
 			} else {
-				start, end, exists := patcher.PatchSpan(diag.Span)
+				start, end, exists := patcher.Patch(span.ByteOffsets(diag.Span))
 				// Filter non-existent (or out-of-bounds) diagnostic.  Diagnostics can
 				// no longer exist if we were given a dirty buffer and the diagnostic
 				// was inside a changed region.
@@ -477,7 +477,7 @@ func (c *ColumnarTable) CrossReferences(ctx context.Context, req *xpb.CrossRefer
 				}
 				caller := callers[kytheuri.ToString(c.Caller)]
 				if caller == nil {
-					log.Printf("WARNING: missing Caller for callsite: %+v", c)
+					log.WarningContextf(ctx, "missing Caller for callsite: %+v", c)
 					continue
 				}
 				a := a2a(c.Location, nil, emitSnippets).Anchor

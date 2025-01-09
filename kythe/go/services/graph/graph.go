@@ -21,13 +21,13 @@ package graph // import "kythe.io/kythe/go/services/graph"
 import (
 	"context"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"sort"
 	"time"
 
 	"kythe.io/kythe/go/services/web"
+	"kythe.io/kythe/go/util/log"
 
 	cpb "kythe.io/kythe/proto/common_go_proto"
 	gpb "kythe.io/kythe/proto/graph_go_proto"
@@ -147,12 +147,12 @@ func WebClient(addr string) Service {
 // RegisterHTTPHandlers registers JSON HTTP handlers with mux using the given
 // graph Service.  The following methods with be exposed:
 //
-//   GET /nodes
-//     Request: JSON encoded graph.NodesRequest
-//     Response: JSON encoded graph.NodesReply
-//   GET /edges
-//     Request: JSON encoded graph.EdgesRequest
-//     Response: JSON encoded graph.EdgesReply
+//	GET /nodes
+//	  Request: JSON encoded graph.NodesRequest
+//	  Response: JSON encoded graph.NodesReply
+//	GET /edges
+//	  Request: JSON encoded graph.EdgesRequest
+//	  Response: JSON encoded graph.EdgesReply
 //
 // Note: /nodes, and /edges will return their responses as serialized protobufs
 // if the "proto" query parameter is set.
@@ -160,7 +160,7 @@ func RegisterHTTPHandlers(ctx context.Context, gs Service, mux *http.ServeMux) {
 	mux.HandleFunc("/nodes", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		defer func() {
-			log.Printf("graph.Nodes:\t%s", time.Since(start))
+			log.InfoContextf(ctx, "graph.Nodes:\t%s", time.Since(start))
 		}()
 
 		var req gpb.NodesRequest
@@ -174,13 +174,13 @@ func RegisterHTTPHandlers(ctx context.Context, gs Service, mux *http.ServeMux) {
 			return
 		}
 		if err := web.WriteResponse(w, r, reply); err != nil {
-			log.Println(err)
+			log.InfoContext(ctx, err)
 		}
 	})
 	mux.HandleFunc("/edges", func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		defer func() {
-			log.Printf("graph.Edges:\t%s", time.Since(start))
+			log.InfoContextf(ctx, "graph.Edges:\t%s", time.Since(start))
 		}()
 
 		var req gpb.EdgesRequest
@@ -194,7 +194,7 @@ func RegisterHTTPHandlers(ctx context.Context, gs Service, mux *http.ServeMux) {
 			return
 		}
 		if err := web.WriteResponse(w, r, reply); err != nil {
-			log.Println(err)
+			log.InfoContext(ctx, err)
 		}
 	})
 }

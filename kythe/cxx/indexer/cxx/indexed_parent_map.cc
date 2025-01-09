@@ -15,9 +15,15 @@
  */
 #include "indexed_parent_map.h"
 
+#include "absl/log/check.h"
+#include "clang/AST/ASTTypeTraits.h"
+#include "clang/AST/Decl.h"
+#include "clang/AST/DeclBase.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/RecursiveASTVisitor.h"
-#include "glog/logging.h"
+#include "clang/AST/Stmt.h"
 #include "kythe/cxx/common/scope_guard.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace kythe {
 namespace {

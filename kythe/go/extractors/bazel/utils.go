@@ -22,13 +22,14 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"kythe.io/kythe/go/platform/kzip"
+	"kythe.io/kythe/go/util/datasize"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/ptypes"
 
 	"bitbucket.org/creachadair/stringset"
@@ -52,7 +53,7 @@ func Write(w io.WriterTo, path string) error {
 	} else if err := f.Close(); err != nil {
 		return fmt.Errorf("closing output file: %v", err)
 	}
-	log.Printf("Finished writing output [%v elapsed]", time.Since(start))
+	log.Infof("Finished writing output [%v elapsed]", time.Since(start))
 	return nil
 }
 
@@ -82,7 +83,7 @@ func LoadAction(path string) (*xapb.ExtraActionInfo, error) {
 	if err := proto.Unmarshal(xa, &info); err != nil {
 		return nil, fmt.Errorf("parsing extra action info: %v", err)
 	}
-	log.Printf("Read %d bytes from extra action file %q", len(xa), path)
+	log.Infof("Read %d bytes from extra action file %q", len(xa), path)
 	return &info, nil
 }
 
@@ -121,6 +122,8 @@ func AddDetail(unit *apb.CompilationUnit, msg proto.Message) error {
 // FindSourceArgs returns a fixup that scans the argument list of a compilation
 // unit for strings matching r. Any that are found, and which also match the
 // names of required input files, are added to the source files of the unit.
+// If the pattern has a single capturing group, the contents of that group will
+// be used rather than the entire matchin.
 func FindSourceArgs(r *regexp.Regexp) func(*apb.CompilationUnit) error {
 	return func(cu *apb.CompilationUnit) error {
 		var inputs stringset.Set
@@ -130,11 +133,38 @@ func FindSourceArgs(r *regexp.Regexp) func(*apb.CompilationUnit) error {
 
 		srcs := stringset.New(cu.SourceFile...)
 		for _, arg := range cu.Argument {
-			if r.MatchString(arg) && inputs.Contains(arg) {
+			switch matches := r.FindStringSubmatch(arg); len(matches) {
+			case 0: // No match.
+				continue
+			case 1: // No capturing groups.
+				// Use `arg` directly without logging.
+			case 2: // Exactly one capturing group.
+				arg = matches[1]
+			default: // More than one capturing group.
+				log.Infof("%v contains multiple capturing groups; using full string %s", r, arg)
+			}
+			if inputs.Contains(arg) {
 				srcs.Add(arg)
 			}
 		}
 		cu.SourceFile = srcs.Elements()
 		return nil
 	}
+}
+
+// CheckFileSize returns true if maxSize == 0 or
+// the size of the file at path exists and is less than or equal to maxSize.
+func CheckFileSize(path string, maxSize datasize.Size) bool {
+	if maxSize == 0 {
+		return true
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	sz := info.Size()
+	if sz <= 0 {
+		return true
+	}
+	return datasize.Size(sz) <= maxSize
 }

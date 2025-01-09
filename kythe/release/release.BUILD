@@ -11,28 +11,14 @@ exports_files(glob([
     "tools/*",
 ]))
 
-config_setting(
-    name = "assign_external_projects_to_separate_corpora",
-    values = {
-        "define": "kythe_assign_external_projects_to_separate_corpora=true",
-    },
-)
-
 construct_vnames_config(
     name = "vnames_config",
-    srcs = select({
-        "//conditions:default": [
-            # by default, the simple vname rules are used, which map everything
-            # to the corpus set via `--define kythe_corpus=<my corpus>`.
-            "simple_vnames.json",
-        ],
-        ":assign_external_projects_to_separate_corpora": [
+    srcs = [
             "vnames.cxx.json",
             "vnames.go.json",
             "vnames.java.json",
             "vnames.json",
         ],
-    }),
 )
 
 # Clone of default Java proto toolchain with "annotate_code" enabled for
@@ -64,23 +50,9 @@ java_library(
 # cross-language metadata file generation.
 proto_lang_toolchain(
     name = "cc_proto_toolchain",
-    blacklisted_protos = [
-        "@com_google_protobuf//:any_proto",
-        "@com_google_protobuf//:api_proto",
-        "@com_google_protobuf//:compiler_plugin_proto",
-        "@com_google_protobuf//:descriptor_proto",
-        "@com_google_protobuf//:duration_proto",
-        "@com_google_protobuf//:empty_proto",
-        "@com_google_protobuf//:field_mask_proto",
-        "@com_google_protobuf//:source_context_proto",
-        "@com_google_protobuf//:struct_proto",
-        "@com_google_protobuf//:timestamp_proto",
-        "@com_google_protobuf//:type_proto",
-        "@com_google_protobuf//:wrappers_proto",
-    ],
     command_line = "--$(PLUGIN_OUT)=:$(OUT)",
     plugin = ":cc_proto_metadata_plugin",
-    runtime = "@com_google_protobuf//:protobuf",
+    runtime = "@com_google_protobuf//:protobuf_nowkt",
 )
 
 # Alternatively, if the plugin doesn't work you can use the default code generator
@@ -91,22 +63,8 @@ proto_lang_toolchain(
 #   --cc_proto_library_header_suffixes=.pb.h,.pb.h.meta
 proto_lang_toolchain(
     name = "cc_native_proto_toolchain",
-    blacklisted_protos = [
-        "@com_google_protobuf//:any_proto",
-        "@com_google_protobuf//:api_proto",
-        "@com_google_protobuf//:compiler_plugin_proto",
-        "@com_google_protobuf//:descriptor_proto",
-        "@com_google_protobuf//:duration_proto",
-        "@com_google_protobuf//:empty_proto",
-        "@com_google_protobuf//:field_mask_proto",
-        "@com_google_protobuf//:source_context_proto",
-        "@com_google_protobuf//:struct_proto",
-        "@com_google_protobuf//:timestamp_proto",
-        "@com_google_protobuf//:type_proto",
-        "@com_google_protobuf//:wrappers_proto",
-    ],
     command_line = "--cpp_out=annotate_headers,annotation_pragma_name=kythe_metadata,annotation_guard_name=KYTHE_IS_RUNNING:$(OUT)",
-    runtime = "@com_google_protobuf//:protobuf",
+    runtime = "@com_google_protobuf//:protobuf_nowkt",
 )
 
 filegroup(
@@ -121,6 +79,17 @@ filegroup(
 
 java_binary(
     name = "bazel_java_extractor",
+    # If the code being run against does annotation processing, the extractor loads and executes those
+    # annotation processors during compilation, and that code could use internal APIs that require
+    # additional --add-exports.
+    jvm_flags = [
+        "--add-exports=jdk.internal.opt/jdk.internal.opt=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
+    ],
     main_class = "com.google.devtools.kythe.extractors.java.bazel.JavaExtractor",
     runtime_deps = [
         "extractors/bazel_java_extractor.jar",
@@ -130,6 +99,17 @@ java_binary(
 
 java_binary(
     name = "bazel_jvm_extractor",
+    # If the code being run against does annotation processing, the extractor loads and executes those
+    # annotation processors during compilation, and that code could use internal APIs that require
+    # additional --add-exports.
+    jvm_flags = [
+        "--add-exports=jdk.internal.opt/jdk.internal.opt=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+        "--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
+    ],
     main_class = "com.google.devtools.kythe.extractors.jvm.bazel.BazelJvmExtractor",
     runtime_deps = ["extractors/bazel_jvm_extractor.jar"],
 )
@@ -147,16 +127,6 @@ filegroup(
 filegroup(
     name = "bazel_proto_extractor",
     srcs = ["extractors/bazel_proto_extractor"],
-)
-
-filegroup(
-    name = "bazel_rust_extractor",
-    srcs = ["extractors/bazel_rust_extractor"],
-)
-
-filegroup(
-    name = "bazel_rust_extractor_script",
-    srcs = ["extractors/bazel_rust_extractor_script.sh"],
 )
 
 extractor_action(
@@ -226,6 +196,7 @@ extractor_action(
     data = [":vnames_config"],
     extractor = ":bazel_extract_kzip",
     mnemonics = [
+        "TsProject",
         "TypeScriptCompile",
         "AngularTemplateCompile",
     ],
@@ -244,23 +215,4 @@ extractor_action(
     extractor = ":bazel_proto_extractor",
     mnemonics = ["GenProtoDescriptorSet"],
     output = "$(ACTION_ID).protobuf.kzip",
-)
-
-extractor_action(
-    name = "extract_kzip_rust",
-    args = [
-        "--extra_action=$(EXTRA_ACTION_FILE)",
-        "--output=$(output $(ACTION_ID).rust.kzip)",
-        "--vnames_config=$(location :vnames_config)",
-    ],
-    data = [
-        ":bazel_rust_extractor",
-        ":vnames_config",
-        "@rust_linux_x86_64//:rustc_lib",
-    ],
-    extractor = ":bazel_rust_extractor_script",
-    mnemonics = [
-        "Rustc",
-    ],
-    output = "$(ACTION_ID).rust.kzip",
 )

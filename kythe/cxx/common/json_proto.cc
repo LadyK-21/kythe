@@ -14,23 +14,25 @@
  * limitations under the License.
  */
 
-#include "json_proto.h"
+#include "kythe/cxx/common/json_proto.h"
 
+#include <memory>
+#include <string>
+
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/escaping.h"
-#include "glog/logging.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
+#include "google/protobuf/any.pb.h"
 #include "google/protobuf/io/coded_stream.h"
-#include "google/protobuf/io/zero_copy_stream_impl.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "google/protobuf/message.h"
+#include "google/protobuf/type.pb.h"
 #include "google/protobuf/util/json_util.h"
 #include "google/protobuf/util/type_resolver.h"
 #include "google/protobuf/util/type_resolver_util.h"
-#include "rapidjson/document.h"
-#include "rapidjson/filewritestream.h"
-#include "rapidjson/stringbuffer.h"
-#include "rapidjson/writer.h"
 
 namespace kythe {
 namespace {
@@ -44,7 +46,7 @@ class PermissiveTypeResolver : public TypeResolver {
       : impl_(google::protobuf::util::NewTypeResolverForDescriptorPool("",
                                                                        pool)) {}
 
-  google::protobuf::util::Status ResolveMessageType(
+  absl::Status ResolveMessageType(
       const std::string& type_url,
       google::protobuf::Type* message_type) override {
     absl::string_view adjusted = type_url;
@@ -52,8 +54,8 @@ class PermissiveTypeResolver : public TypeResolver {
     return impl_->ResolveMessageType(absl::StrCat("/", adjusted), message_type);
   }
 
-  google::protobuf::util::Status ResolveEnumType(
-      const std::string& type_url, google::protobuf::Enum* enum_type) override {
+  absl::Status ResolveEnumType(const std::string& type_url,
+                               google::protobuf::Enum* enum_type) override {
     absl::string_view adjusted = type_url;
     adjusted.remove_prefix(type_url.rfind('/') + 1);
     return impl_->ResolveEnumType(absl::StrCat("/", adjusted), enum_type);
@@ -96,7 +98,7 @@ absl::Status WriteMessageAsJsonToStringInternal(
   options.preserve_proto_field_names = true;
 
   auto status = google::protobuf::util::BinaryToJsonString(
-      resolver.get(), message.GetDescriptor()->full_name(),
+      resolver.get(), std::string(message.GetDescriptor()->full_name()),
       message.SerializeAsString(), out, options);
   if (!status.ok()) {
     return absl::Status(static_cast<absl::StatusCode>(status.code()),
@@ -132,68 +134,6 @@ absl::StatusOr<std::string> WriteMessageAsJsonToString(
   return result;
 }
 
-bool WriteMessageAsJsonToString(const google::protobuf::Message& message,
-                                const std::string& format_key,
-                                std::string* out) {
-  rapidjson::StringBuffer buffer;
-  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-  writer.StartObject();
-  writer.Key("format");
-  writer.String(format_key.c_str());
-  writer.Key("content");
-  {
-    std::string content;
-    if (!WriteMessageAsJsonToString(message, &content)) {
-      return false;
-    }
-    writer.RawValue(content.data(), content.size(), rapidjson::kObjectType);
-  }
-  writer.EndObject();
-  *out = buffer.GetString();
-  return true;
-}
-
-bool MergeJsonWithMessage(const std::string& in, std::string* format_key,
-                          google::protobuf::Message* message) {
-  rapidjson::Document document;
-  document.Parse(in.c_str());
-  if (document.HasParseError()) {
-    return false;
-  }
-  if (!document.IsObject() || !document.HasMember("format") ||
-      !document.HasMember("content") || !document["format"].IsString() ||
-      !document["content"].IsObject()) {
-    return false;
-  }
-  std::string in_format = document["format"].GetString();
-  if (format_key) {
-    *format_key = in_format;
-  }
-  if (in_format == "kythe") {
-    std::string content = [&] {
-      rapidjson::StringBuffer buffer;
-      rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
-      CHECK(document["content"].Accept(writer));
-      return std::string(buffer.GetString());
-    }();
-    std::string binary;
-
-    auto resolver =
-        MakeTypeResolverForPool(message->GetDescriptor()->file()->pool());
-
-    auto status = google::protobuf::util::JsonToBinaryString(
-        resolver.get(), message->GetDescriptor()->full_name(), content, &binary,
-        DefaultParseOptions());
-
-    if (!status.ok()) {
-      LOG(ERROR) << status.ToString() << ": " << content;
-      return false;
-    }
-    return message->ParseFromString(binary);
-  }
-  return false;
-}
-
 absl::Status ParseFromJsonStream(
     google::protobuf::io::ZeroCopyInputStream* input,
     const JsonParseOptions& options, google::protobuf::Message* message) {
@@ -203,8 +143,8 @@ absl::Status ParseFromJsonStream(
   std::string binary;
   google::protobuf::io::StringOutputStream output(&binary);
   auto status = google::protobuf::util::JsonToBinaryStream(
-      resolver.get(), message->GetDescriptor()->full_name(), input, &output,
-      options);
+      resolver.get(), std::string(message->GetDescriptor()->full_name()), input,
+      &output, options);
 
   if (!status.ok()) {
     return absl::Status(static_cast<absl::StatusCode>(status.code()),

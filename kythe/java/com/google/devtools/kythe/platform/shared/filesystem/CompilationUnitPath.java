@@ -32,6 +32,8 @@ import java.nio.file.WatchService;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** A Path for CompilationUnit-based paths. */
 final class CompilationUnitPath implements Path {
@@ -58,7 +60,7 @@ final class CompilationUnitPath implements Path {
   }
 
   @Override
-  public Path getRoot() {
+  public @Nullable Path getRoot() {
     return isAbsolute() ? fileSystem.getRootDirectory() : null;
   }
 
@@ -242,7 +244,7 @@ final class CompilationUnitPath implements Path {
 
   DirectoryStream<Path> newDirectoryStream(DirectoryStream.Filter<? super Path> filter)
       throws IOException {
-    final Iterable<Path> entries = fileSystem.list(this);
+    final Set<Path> entries = fileSystem.list(this);
     final List<Path> filtered = new ArrayList<>();
     for (Path p : entries) {
       if (filter.accept(p)) {
@@ -260,7 +262,7 @@ final class CompilationUnitPath implements Path {
     };
   }
 
-  private CompilationUnitPath wrap(Path path) {
+  private @Nullable CompilationUnitPath wrap(Path path) {
     return path == null ? null : new CompilationUnitPath(fileSystem, path);
   }
 

@@ -22,7 +22,7 @@ import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
 import "kythe/proto/storage.proto";
 
-option go_package = "analysis_go_proto";
+option go_package = "kythe.io/kythe/proto/analysis_go_proto";
 option java_package = "com.google.devtools.kythe.proto";
 option cc_enable_arenas = true;
 
@@ -42,6 +42,9 @@ message AnalysisRequest {
 
   // An identifier for the current analysis.
   string build_id = 4;
+
+  // A digest of the CompilationUnit used for identification.
+  string compilation_digest = 5;
 }
 
 // AnalysisOutput contains an output artifact for the current analysis taking
@@ -79,6 +82,9 @@ message AnalysisResult {
 
   Status status = 1;   // the status code describing the result
   string summary = 2;  // a human-readable error message for use in diagnostics
+
+  // Freeform details from the analyzer
+  repeated google.protobuf.Any details = 3;
 }
 
 // Describes a single unit of compilation.
@@ -111,6 +117,10 @@ message CompilationUnit {
   // All files that might be touched in the course of this compilation.
   // Consumers of the CompilationUnit may not assume anything about the order
   // of the elements of this field.
+  //
+  // This specifies a virtual file system to be exposed to the compiler.
+  // FileInputs with equal digests are the same file, with e.g. the same inode.
+  // (This can affect the behavior of `#pragma once` in C, among other things).
   repeated FileInput required_input = 3;
 
   // Set by the extractor to indicate that the original input had compile
@@ -188,17 +198,28 @@ message KzipInfo {
   message CorpusInfo {
     reserved 1, 2, 3;
 
-    message RequiredInputs {
+    message Inputs {
       // TODO(salguarnieri) Add count of unique inputs for this corpus?
       int32 count = 1;
     }
 
+    message CUInfo {
+      int32 count = 1;
+      // Map from java version to number of CUs that make use of that java
+      // version. Note that if no -source flag is specified for a CU, it will
+      // not impact this count.
+      map<int32, int32> java_version_count = 2;
+    }
+
     // Map from language to count of required inputs that have this corpus in
     // their VName.
-    map<string, RequiredInputs> language_required_inputs = 4;
+    map<string, Inputs> language_required_inputs = 4;
     // Map from language to count of sources that have this corpus in their
     // required_input VName.
-    map<string, RequiredInputs> language_sources = 5;
+    map<string, Inputs> language_sources = 5;
+    // Map from language to count of compilation units that have this corpus in
+    // their VName.
+    map<string, CUInfo> language_cu_info = 6;
   }
 
   // Map from corpus name to corpus info.

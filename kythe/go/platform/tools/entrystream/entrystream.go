@@ -18,15 +18,16 @@
 // messages. By default, entrystream does nothing to the entry stream.
 //
 // Examples:
-//   $ ... | entrystream                      # Passes through proto entry stream unchanged
-//   $ ... | entrystream --sort               # Sorts the entry stream into GraphStore order
-//   $ ... | entrystream --write_format=json  # Prints entry stream as JSON
-//   $ ... | entrystream --entrysets          # Prints combined entry sets as JSON
-//   $ ... | entrystream --count              # Prints the number of entries in the incoming stream
-//   $ ... | entrystream --read_format=json   # Reads entry stream as JSON and prints a proto stream
 //
-//   $ ... | entrystream --write_format=riegeli # Writes entry stream as a Riegeli file
-//   $ ... | entrystream --read_format=riegeli  # Reads the entry stream from a Riegeli file
+//	$ ... | entrystream                      # Passes through proto entry stream unchanged
+//	$ ... | entrystream --sort               # Sorts the entry stream into GraphStore order
+//	$ ... | entrystream --write_format=json  # Prints entry stream as JSON
+//	$ ... | entrystream --entrysets          # Prints combined entry sets as JSON
+//	$ ... | entrystream --count              # Prints the number of entries in the incoming stream
+//	$ ... | entrystream --read_format=json   # Reads entry stream as JSON and prints a proto stream
+//
+//	$ ... | entrystream --write_format=riegeli # Writes entry stream as a Riegeli file
+//	$ ... | entrystream --read_format=riegeli  # Reads the entry stream from a Riegeli file
 package main
 
 import (
@@ -35,7 +36,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"strings"
 
@@ -45,8 +45,10 @@ import (
 	"kythe.io/kythe/go/util/compare"
 	"kythe.io/kythe/go/util/disksort"
 	"kythe.io/kythe/go/util/flagutil"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/riegeli"
 
+	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
 	spb "kythe.io/kythe/proto/storage_go_proto"
@@ -65,6 +67,7 @@ const (
 	delimitedFormat = "delimited"
 	jsonFormat      = "json"
 	riegeliFormat   = "riegeli"
+	textprotoFormat = "textproto"
 )
 
 var (
@@ -72,7 +75,7 @@ var (
 	writeJSON = flag.Bool("write_json", false, "Print JSON stream as output (deprecated: use --write_format)")
 
 	readFormat  = flag.String("read_format", delimitedFormat, "Format of the input stream (accepted formats: {delimited,json,riegeli})")
-	writeFormat = flag.String("write_format", delimitedFormat, "Format of the output stream (accepted formats: {delimited,json,riegeli})")
+	writeFormat = flag.String("write_format", delimitedFormat, "Format of the output stream (accepted formats: {delimited,json,riegeli,textproto})")
 
 	riegeliOptions = flag.String("riegeli_writer_options", "", "Riegeli writer options")
 
@@ -102,11 +105,11 @@ func main() {
 	*writeFormat = strings.ToLower(*writeFormat)
 
 	if *readJSON {
-		log.Printf("WARNING: --read_json is deprecated; use --read_format=json")
+		log.Warningf("--read_json is deprecated; use --read_format=json")
 		*readFormat = jsonFormat
 	}
 	if *writeJSON {
-		log.Printf("WARNING: --write_json is deprecated; use --write_format=json")
+		log.Warningf("--write_json is deprecated; use --write_format=json")
 		*writeFormat = jsonFormat
 	}
 
@@ -232,6 +235,14 @@ func main() {
 			failOnErr(rd(func(entry *spb.Entry) error {
 				return wr.PutProto(entry)
 			}))
+		case textprotoFormat:
+			entries := &spb.Entries{}
+			failOnErr(rd(func(entry *spb.Entry) error {
+				entries.Entries = append(entries.Entries, entry)
+				return nil
+			}))
+			out.WriteString(prototext.Format(entries))
+
 		default:
 			log.Fatalf("Unsupported --write_format=%s", *writeFormat)
 		}
@@ -255,7 +266,7 @@ func sortEntries(rd stream.EntryReader) (stream.EntryReader, error) {
 	}
 
 	return func(f func(*spb.Entry) error) error {
-		return sorter.Read(func(i interface{}) error {
+		return sorter.Read(func(i any) error {
 			return f(i.(*spb.Entry))
 		})
 	}, nil
@@ -263,15 +274,15 @@ func sortEntries(rd stream.EntryReader) (stream.EntryReader, error) {
 
 type entryLesser struct{}
 
-func (entryLesser) Less(a, b interface{}) bool {
+func (entryLesser) Less(a, b any) bool {
 	return compare.Entries(a.(*spb.Entry), b.(*spb.Entry)) == compare.LT
 }
 
 type entryMarshaler struct{}
 
-func (entryMarshaler) Marshal(x interface{}) ([]byte, error) { return proto.Marshal(x.(proto.Message)) }
+func (entryMarshaler) Marshal(x any) ([]byte, error) { return proto.Marshal(x.(proto.Message)) }
 
-func (entryMarshaler) Unmarshal(rec []byte) (interface{}, error) {
+func (entryMarshaler) Unmarshal(rec []byte) (any, error) {
 	var e spb.Entry
 	return &e, proto.Unmarshal(rec, &e)
 }

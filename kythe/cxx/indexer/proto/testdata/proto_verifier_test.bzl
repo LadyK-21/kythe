@@ -40,7 +40,17 @@ def get_proto_files_and_proto_paths(protolibs):
         for src in info.direct_sources:
             toplevel_srcs.append(src)
     all_srcs = depset([], transitive = [lib[ProtoInfo].transitive_sources for lib in protolibs])
-    proto_paths = depset(transitive = [lib[ProtoInfo].transitive_proto_path for lib in protolibs])
+    proto_paths = depset(
+        transitive = [lib[ProtoInfo].transitive_proto_path for lib in protolibs] +
+                     # Workaround for https://github.com/bazelbuild/bazel/issues/7964.
+                     # Since we can't rely on ProtoInfo to provide accurate roots, generate them here.
+                     [depset([
+                         src.root.path
+                         for src in depset(toplevel_srcs, transitive = [all_srcs], order = "postorder").to_list()
+                         if src.root.path
+                     ])],
+        order = "postorder",
+    )
     return toplevel_srcs, all_srcs, proto_paths
 
 def _proto_extract_kzip_impl(ctx):
@@ -74,7 +84,7 @@ proto_extract_kzip = rule(
         "extractor": attr.label(
             default = Label("//kythe/cxx/extractor/proto:proto_extractor"),
             executable = True,
-            cfg = "host",
+            cfg = "exec",
         ),
         "opts": attr.string_list(),
         "vnames_config": attr.label(
@@ -97,6 +107,7 @@ def proto_verifier_test(
         indexer_opts = [],
         verifier_opts = [],
         convert_marked_source = False,
+        resolve_code_facts = False,
         vnames_config = None,
         visibility = None):
     """Extract, analyze, and verify a proto compilation.
@@ -133,8 +144,9 @@ def proto_verifier_test(
         name = name + "_entries",
         testonly = True,
         indexer = "//kythe/cxx/indexer/proto:indexer",
+        target_indexer = "//kythe/cxx/indexer/proto:indexer",
         opts = indexer_opts + ["--index_file"],
-        tags = tags,
+        tags = tags + ["manual"],
         visibility = visibility,
         deps = [kzip],
     )
@@ -148,6 +160,7 @@ def proto_verifier_test(
         srcs = [entries],
         opts = vopts,
         tags = tags,
+        resolve_code_facts = resolve_code_facts,
         visibility = visibility,
         deps = [entries],
     )

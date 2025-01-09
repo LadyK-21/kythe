@@ -278,11 +278,15 @@ DEF_TRAVERSE_TYPEPAIR(TypeOfExprType, {
   return getDerived().TraverseStmt(TL.getUnderlyingExpr());
 });
 DEF_TRAVERSE_TYPEPAIR(TypeOfType, {
-  return getDerived().TraverseTypePair(TL.getUnderlyingTInfo()->getTypeLoc(),
-                                       T->getUnderlyingType());
+  return getDerived().TraverseTypePair(TL.getUnmodifiedTInfo()->getTypeLoc(),
+                                       T->getUnmodifiedType());
 });
 DEF_TRAVERSE_TYPEPAIR(DecltypeType, {
   return getDerived().TraverseStmt(TL.getUnderlyingExpr());
+});
+DEF_TRAVERSE_TYPEPAIR(PackIndexingType, {
+  if (!getDerived().TraverseType(T->getPattern())) return false;
+  getDerived().TraverseStmt(T->getIndexExpr());
 });
 DEF_TRAVERSE_TYPEPAIR(UnaryTransformType, {
   return getDerived().TraverseTypePair(TL.getUnderlyingTInfo()->getTypeLoc(),
@@ -296,6 +300,8 @@ DEF_TRAVERSE_TYPEPAIR(DeducedTemplateSpecializationType, {
              TL.getTypePtr()->getTemplateName()) &&
          getDerived().TraverseType(TL.getTypePtr()->getDeducedType());
 });
+DEF_TRAVERSE_TYPEPAIR(ArrayParameterType, {});
+DEF_TRAVERSE_TYPEPAIR(CountAttributedType, {});
 DEF_TRAVERSE_TYPEPAIR(BTFTagAttributedType, {});
 DEF_TRAVERSE_TYPEPAIR(RecordType, {});
 DEF_TRAVERSE_TYPEPAIR(EnumType, {});

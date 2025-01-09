@@ -22,10 +22,13 @@
 #include <string.h>
 
 #include <algorithm>
+#include <cassert>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
 #include "absl/strings/str_format.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -133,15 +136,31 @@ bool HasCxxInputInCommandLineOrArgs(
   return action == CXX_COMPILE || action == C_COMPILE;
 }
 
+static std::vector<std::string> CopySkippingN(
+    const std::vector<std::string>& input,
+    absl::FunctionRef<size_t(std::string_view)> skip) {
+  std::vector<std::string> output;
+  output.reserve(input.size());
+  for (auto iter = input.begin(), end = input.end(); iter < end;) {
+    if (size_t count = skip(*iter)) {
+      if (count >= end - iter) {
+        break;
+      }
+      iter += count;
+    } else {
+      output.push_back(*iter++);
+    }
+  }
+  return output;
+}
+
 // Returns a copy of the input vector with every string which matches the
 // regular expression removed.
 static std::vector<std::string> CopyOmittingMatches(
     const FullMatchRegex& re, const std::vector<std::string>& input) {
-  std::vector<std::string> output;
-  std::remove_copy_if(
-      input.begin(), input.end(), back_inserter(output),
-      [&re](const std::string& arg) { return re.FullMatch(arg); });
-  return output;
+  return CopySkippingN(input, [&](std::string_view arg) -> size_t {
+    return re.FullMatch(arg) ? 1 : 0;
+  });
 }
 
 // Returns a copy of the input vector after removing each string which matches
@@ -149,15 +168,9 @@ static std::vector<std::string> CopyOmittingMatches(
 // string.
 static std::vector<std::string> CopyOmittingMatchesAndFollowers(
     const FullMatchRegex& re, const std::vector<std::string>& input) {
-  std::vector<std::string> output;
-  for (size_t i = 0; i < input.size(); ++i) {
-    if (!re.FullMatch(input[i])) {
-      output.push_back(input[i]);
-    } else {
-      ++i;  // Skip the matching string *and* the next string.
-    }
-  }
-  return output;
+  return CopySkippingN(input, [&](std::string_view arg) -> size_t {
+    return re.FullMatch(arg) ? 2 : 0;
+  });
 }
 
 // Returns a copy of the input vector with the supplied prefix string removed
@@ -174,6 +187,18 @@ static std::vector<std::string> StripPrefix(
     }
   }
   return output;
+}
+
+static int ReplaceAllMatches(std::vector<std::string>& input,
+                             const FullMatchRegex& re, llvm::StringRef repl) {
+  int count = 0;
+  for (auto& arg : input) {
+    if (re.FullMatch(arg)) {
+      arg = repl;
+      ++count;
+    }
+  }
+  return count;
 }
 
 std::vector<std::string> GCCArgsToClangArgs(
@@ -269,7 +294,9 @@ std::vector<std::string> AdjustClangArgsForSyntaxOnly(
       "|-M[MGP]?"
       "|-S"
       "|-W[al],.*"
-      "|-c"
+      "|-Xlinker=.*"
+      "|--for-linker=.*"
+      "|--mllvm=.*"
       "|-f(no-)?data-sections"
       "|-f(no-)?function-sections"
       "|-f(no-)?omit-frame-pointer"
@@ -278,17 +305,50 @@ std::vector<std::string> AdjustClangArgsForSyntaxOnly(
       "|-f(no-)?strict-aliasing"
       "|-f(no-)?test-coverage"
       "|-f(no-)?unroll-loops"
-      "|-fsyntax-only"  // We don't want multiple -fsyntax-only args.
       "|-g.+"
       "|-nostartfiles"
       "|-s"
-      "|-shared");
-  const FullMatchRegex inapplicable_args_with_values_re("-M[FTQ]");
+      "|-shared"
+      "|-Xcrosstool.*");
+  const FullMatchRegex inapplicable_args_with_values_re(
+      "-M[FTQ]"
+      "|-Xlinker"
+      "|--for-linker"
+      "|-Xassembler"
+      "|-Xarch_.*"
+      "|-mllvm");
+  // Arguments which may match one of the above lists which we want to keep
+  // regardless.
+  const FullMatchRegex keep_args("-X(clang|preprocessor).*");
 
-  std::vector<std::string> result = CopyOmittingMatchesAndFollowers(
-      inapplicable_args_with_values_re,
-      CopyOmittingMatches(inapplicable_args_re, clang_args));
-  result.push_back("-fsyntax-only");
+  std::vector<std::string> result =
+      CopySkippingN(clang_args, [&](std::string_view arg) -> size_t {
+        if (keep_args.FullMatch(arg)) {
+          return 0;
+        }
+        if (inapplicable_args_re.FullMatch(arg)) {
+          return 1;
+        }
+        if (inapplicable_args_with_values_re.FullMatch(arg)) {
+          return 2;
+        }
+        return 0;
+      });
+
+  const FullMatchRegex action_args(
+      "-E|--preprocess"
+      "|-S|--assemble"
+      "|-c|--compile"
+      "|-fdriver-only"
+      "|-fsyntax-only"
+      "--precompile");
+
+  // Attempt to preserve the location of any extant action args so that
+  // subsequent path arguments aren't misinterpreted as arguments to preceding
+  // flags.
+  if (ReplaceAllMatches(result, action_args, "-fsyntax-only") == 0) {
+    result.push_back("-fsyntax-only");
+  }
 
   return result;
 }

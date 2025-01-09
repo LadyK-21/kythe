@@ -17,10 +17,11 @@
 // Binary triples implements a converter from an Entry stream to a stream of triples.
 //
 // Examples:
-//   triples < entries > triples.nq
-//   triples entries > triples.nq.gz
-//   triples --graphstore path/to/gs > triples.nq.gz
-//   triples entries triples.nq
+//
+//	triples < entries > triples.nq
+//	triples entries > triples.nq.gz
+//	triples --graphstore path/to/gs > triples.nq.gz
+//	triples entries triples.nq
 //
 // Reference: http://en.wikipedia.org/wiki/N-Triples
 package main
@@ -31,7 +32,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 
 	"kythe.io/kythe/go/platform/vfs"
@@ -41,6 +41,7 @@ import (
 	"kythe.io/kythe/go/util/encoding/rdf"
 	"kythe.io/kythe/go/util/flagutil"
 	"kythe.io/kythe/go/util/kytheuri"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/schema/edges"
 	"kythe.io/kythe/go/util/schema/facts"
 
@@ -139,9 +140,9 @@ func main() {
 
 	if !*quiet {
 		if !*keepReverseEdges {
-			log.Printf("Skipped %d reverse edges", reverseEdges)
+			log.Infof("Skipped %d reverse edges", reverseEdges)
 		}
-		log.Printf("Wrote %d triples", triples)
+		log.Infof("Wrote %d triples", triples)
 	}
 }
 

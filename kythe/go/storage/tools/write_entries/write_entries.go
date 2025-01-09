@@ -18,22 +18,24 @@
 // writes each to a graphstore server.
 //
 // Usage:
-//   entry_emitter ... | write_entries --graphstore addr
+//
+//	entry_emitter ... | write_entries --graphstore addr
 //
 // Example:
-//   java_indexer_server --port 8181 &
-//   graphstore --port 9999 &
-//   analysis_driver --analyzer localhost:8181 /tmp/compilation.kindex | \
-//     write_entries --workers 10 --graphstore localhost:9999
+//
+//	java_indexer_server --port 8181 &
+//	graphstore --port 9999 &
+//	analysis_driver --analyzer localhost:8181 /tmp/compilation.kzip | \
+//	  write_entries --workers 10 --graphstore localhost:9999
 //
 // Example:
-//   zcat entries.gz | write_entries --graphstore gs/leveldb
+//
+//	zcat entries.gz | write_entries --graphstore gs/leveldb
 package main
 
 import (
 	"context"
 	"flag"
-	"log"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -42,6 +44,7 @@ import (
 	"kythe.io/kythe/go/storage/gsutil"
 	"kythe.io/kythe/go/storage/stream"
 	"kythe.io/kythe/go/util/flagutil"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/profile"
 
 	spb "kythe.io/kythe/proto/storage_go_proto"
@@ -64,8 +67,6 @@ func init() {
 }
 
 func main() {
-	log.SetPrefix("write_entries: ")
-
 	flag.Parse()
 	if *numWorkers < 1 {
 		flagutil.UsageErrorf("Invalid number of --workers %d (must be ≥ 1)", *numWorkers)
@@ -105,7 +106,7 @@ func main() {
 	}
 	wg.Wait()
 
-	log.Printf("Wrote %d entries", numEntries)
+	log.InfoContextf(ctx, "Wrote %d entries", numEntries)
 }
 
 func writeEntries(ctx context.Context, s graphstore.Service, reqs <-chan *spb.WriteRequest) (uint64, error) {

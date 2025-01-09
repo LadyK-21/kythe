@@ -22,7 +22,6 @@ import (
 	"errors"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,8 +29,8 @@ import (
 	"strings"
 	"testing"
 
-	"kythe.io/kythe/go/platform/kindex"
 	"kythe.io/kythe/go/platform/kzip"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/ptypes"
 
 	"github.com/golang/protobuf/proto"
@@ -284,7 +283,7 @@ func TestFetchInputs(t *testing.T) {
 		filepath.Join(tmp, "bad.h"), // does not exist
 	}
 	err = cfg.fetchInputs(context.Background(), paths, func(i int, r io.Reader) error {
-		fd, err := kindex.FileData(paths[i], r)
+		fd, err := kzip.FileData(paths[i], r)
 		if err == nil {
 			fds = append(fds, fd)
 		}
@@ -317,24 +316,51 @@ func TestFetchInputs(t *testing.T) {
 }
 
 func TestFindSourceArgs(t *testing.T) {
-	unit := &apb.CompilationUnit{
-		RequiredInput: []*apb.CompilationUnit_FileInput{{
-			Info: &apb.FileInfo{Path: "a/b/c.go"},
-		}, {
-			Info: &apb.FileInfo{Path: "d/e/f.cc"},
-		}, {
-			Info: &apb.FileInfo{Path: "old"},
-		}},
-		SourceFile: []string{"old"},
-		// Matches:        no      yes, keep   yes, skip   no
-		Argument: []string{"blah", "a/b/c.go", "p/d/q.go", "quux"},
+	tests := []struct {
+		unit *apb.CompilationUnit
+		r    *regexp.Regexp
+		want []string
+	}{
+		{
+			unit: &apb.CompilationUnit{
+				RequiredInput: []*apb.CompilationUnit_FileInput{{
+					Info: &apb.FileInfo{Path: "a/b/c.go"},
+				}, {
+					Info: &apb.FileInfo{Path: "d/e/f.cc"},
+				}, {
+					Info: &apb.FileInfo{Path: "old"},
+				}},
+				SourceFile: []string{"old"},
+				// Matches:        no      yes, keep   yes, skip   no
+				Argument: []string{"blah", "a/b/c.go", "p/d/q.go", "quux"},
+			},
+			r: regexp.MustCompile(`\.go$`),
+			// Results:      new         extant
+			want: []string{"a/b/c.go", "old"},
+		},
+		{
+			unit: &apb.CompilationUnit{
+				RequiredInput: []*apb.CompilationUnit_FileInput{{
+					Info: &apb.FileInfo{Path: "a/b/c.go"},
+				}, {
+					Info: &apb.FileInfo{Path: "d/e/f.cc"},
+				}, {
+					Info: &apb.FileInfo{Path: "old"},
+				}},
+				SourceFile: []string{"old"},
+				// Matches:        no      yes, keep   yes, skip   no
+				Argument: []string{"blah", "--src=a/b/c.go", "--src=p/d/q.go", "quux"},
+			},
+			r: regexp.MustCompile(`^--src=(.+\.go)$`),
+			// Results:      new         extant
+			want: []string{"a/b/c.go", "old"},
+		},
 	}
-	// Results:      new         extant
-	want := []string{"a/b/c.go", "old"}
 
-	r := regexp.MustCompile(`\.go$`)
-	FindSourceArgs(r)(unit)
-	if got := unit.SourceFile; !reflect.DeepEqual(got, want) {
-		t.Errorf("FindSourceArgs: got %+q, want %+q", got, want)
+	for _, test := range tests {
+		FindSourceArgs(test.r)(test.unit)
+		if got := test.unit.SourceFile; !reflect.DeepEqual(got, test.want) {
+			t.Errorf("FindSourceArgs: got %+q, want %+q", got, test.want)
+		}
 	}
 }

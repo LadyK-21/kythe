@@ -18,6 +18,7 @@
 #define KYTHE_CXX_VERIFIER_H_
 
 #include <functional>
+#include <optional>
 #include <string>
 
 #include "absl/container/flat_hash_map.h"
@@ -57,14 +58,26 @@ class Verifier {
   /// \brief Loads a text proto with goal comments indicating rules and data.
   /// The VName for the source file will be blank.
   /// \param file_data The data to load
+  /// \param path the path to use for anchors
+  /// \param root the root to use for anchors
+  /// \param corpus the corpus to use for anchors
   /// \return false if we failed
-  bool LoadInlineProtoFile(const std::string& file_data);
+  bool LoadInlineProtoFile(const std::string& file_data,
+                           absl::string_view path = "",
+                           absl::string_view root = "",
+                           absl::string_view corpus = "");
 
   /// \brief During verification, ignore duplicate facts.
   void IgnoreDuplicateFacts();
 
+  /// \brief During verification, ignore conflicting /kythe/code facts.
+  void IgnoreCodeConflicts();
+
   /// \brief Save results of verification keyed by inspection label.
   void SaveEVarAssignments();
+
+  /// \brief Emit verbose logging.
+  void Verbose();
 
   /// \brief Dump all goals to standard out.
   void ShowGoals();
@@ -85,9 +98,9 @@ class Verifier {
   /// \brief Attempts to satisfy all goals from all loaded rule files and facts.
   /// \param inspect function to call on any inspection request
   /// \return true if all goals could be satisfied.
-  bool VerifyAllGoals(
-      std::function<bool(Verifier* context, const AssertionParser::Inspection&)>
-          inspect);
+  bool VerifyAllGoals(std::function<bool(Verifier* context, const Inspection&,
+                                         std::string_view)>
+                          inspect);
 
   /// \brief Attempts to satisfy all goals from all loaded rule files and facts.
   /// \return true if all goals could be satisfied.
@@ -182,6 +195,9 @@ class Verifier {
   /// \brief Look for assertions in file node text.
   void UseFileNodes() { assertions_from_file_nodes_ = true; }
 
+  /// \brief Only raise a warning if a file VName is missing.
+  void AllowMissingFileVNames() { allow_missing_file_vnames_ = true; }
+
   /// \brief Convert MarkedSource-valued facts to graphs.
   void ConvertMarkedSource() { convert_marked_source_ = true; }
 
@@ -207,12 +223,26 @@ class Verifier {
   /// \brief Use the fast solver.
   void UseFastSolver(bool value) { use_fast_solver_ = value; }
 
+  /// \brief Gets a string representation of `i`.
+  /// \deprecated Inspection callbacks will be provided with strings and
+  /// will no longer have access to the internal AST.
+  std::string InspectionString(const Inspection& i);
+
+  /// \brief Use `corpus` for file nodes without a corpus set.
+  void UseDefaultFileCorpus(const std::string& corpus) {
+    default_file_corpus_ = IdentifierFor(builtin_location_, corpus);
+  }
+
  private:
   using InternedVName = std::tuple<Symbol, Symbol, Symbol, Symbol, Symbol>;
 
   /// \brief Interns an AST node known to be a VName.
   /// \param node the node to intern.
   InternedVName InternVName(AstNode* node);
+
+  /// \return a new vname with its corpus filled with the default file corpus
+  /// if `node` is a vname without a corpus set; otherwise `node`.
+  AstNode* FixFileVName(AstNode* node);
 
   /// \brief Generate a VName that will not conflict with any other VName.
   AstNode* NewUniqueVName(const yy::location& loc);
@@ -223,7 +253,15 @@ class Verifier {
   /// \return null if something went wrong; otherwise, an AstNode corresponding
   /// to a VName of a synthetic node for `code_data`.
   AstNode* ConvertCodeFact(const yy::location& loc,
-                           const google::protobuf::string& code_data);
+                           const std::string& code_data);
+
+  /// \brief Converts an encoded /kythe/code/json fact to a form that's useful
+  /// to the verifier.
+  /// \param loc The location to use in diagnostics.
+  /// \return null if something went wrong; otherwise, an AstNode corresponding
+  /// to a VName of a synthetic node for `code_data`.
+  AstNode* ConvertCodeJsonFact(const yy::location& loc,
+                               const std::string& code_data);
 
   /// \brief Converts a MarkedSource message to a form that's useful
   /// to the verifier.
@@ -260,14 +298,20 @@ class Verifier {
   /// All known facts.
   Database facts_;
 
-  /// Multimap from anchor offsets to anchor VName tuples.
-  std::multimap<std::pair<size_t, size_t>, AstNode*> anchors_;
+  /// Maps anchor offsets to anchor VName tuples.
+  AnchorMap anchors_;
 
   /// Has the database been prepared?
   bool database_prepared_ = false;
 
+  /// Emit verbose logging?
+  bool verbose_ = false;
+
   /// Ignore duplicate facts during verification?
   bool ignore_dups_ = false;
+
+  /// Ignore conflicting /kythe/code facts during verification?
+  bool ignore_code_conflicts_ = false;
 
   /// Filename to use for builtin constants.
   std::string builtin_location_name_;
@@ -315,6 +359,10 @@ class Verifier {
   /// serialized kythe.proto.MarkedSource message.
   AstNode* code_id_;
 
+  /// Node to use for the `code/json` fact kind. The fact value should be a
+  /// JSON-serialized kythe.proto.MarkedSource message.
+  AstNode* code_json_id_;
+
   /// The highest goal group reached during solving (often the culprit for why
   /// the solution failed).
   size_t highest_group_reached_ = 0;
@@ -331,7 +379,7 @@ class Verifier {
   /// it's important to disambiguate cases where this is likely
   /// (e.g., we add line and column information to labels we generate
   /// for anchors).
-  std::map<std::string, AstNode*> saved_assignments_;
+  absl::flat_hash_map<std::string, std::string> saved_assignments_;
 
   /// Maps from pretty-printed vnames to (parsed) file node text.
   std::map<std::string, Symbol> fake_files_;
@@ -383,6 +431,9 @@ class Verifier {
 
   /// Identifier for MarkedSource INITIALIZER kinds.
   AstNode* marked_source_initializer_id_;
+
+  /// Identifier for MarkedSource MODIFIER kinds.
+  AstNode* marked_source_modifier_id_;
 
   /// Identifier for MarkedSource PARAMETER_LOOKUP_BY_PARAM kinds.
   AstNode* marked_source_parameter_lookup_by_param_id_;
@@ -438,6 +489,9 @@ class Verifier {
   /// Find file vnames by examining file content.
   bool file_vnames_ = true;
 
+  /// If file_vnames_ is true, only warn if we can't find a file's VName.
+  bool allow_missing_file_vnames_ = false;
+
   /// Use the fast solver.
   bool use_fast_solver_ = false;
 
@@ -449,6 +503,12 @@ class Verifier {
 
   /// Maps VNames to known_file_sym_, known_not_file_sym_, or file text.
   absl::flat_hash_map<InternedVName, Symbol> fast_solver_files_;
+
+  /// File corpus to use if none is set on a file node.
+  AstNode* default_file_corpus_;
+
+  /// The symbol for the empty string.
+  Symbol empty_string_sym_;
 };
 
 }  // namespace verifier

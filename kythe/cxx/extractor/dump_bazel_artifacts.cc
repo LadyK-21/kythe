@@ -13,18 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <cerrno>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
-#include <vector>
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
+#include "absl/log/log.h"
 #include "absl/strings/string_view.h"
-#include "glog/logging.h"
 #include "google/protobuf/io/zero_copy_stream_impl.h"
 #include "kythe/cxx/common/init.h"
 #include "kythe/cxx/extractor/bazel_artifact_reader.h"
+#include "kythe/cxx/extractor/bazel_event_reader.h"
 
 ABSL_FLAG(std::string, build_event_binary_file, "",
           "Bazel event protocol file to read");

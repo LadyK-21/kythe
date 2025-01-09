@@ -19,13 +19,11 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 
-#include "absl/memory/memory.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "kythe/proto/metadata.pb.h"
 #include "kythe/proto/storage.pb.h"
-#include "rapidjson/document.h"
 
 namespace kythe {
 
@@ -36,6 +34,7 @@ class MetadataFile {
     kNone,       ///< No special semantics.
     kWrite,      ///< Write semantics.
     kReadWrite,  ///< Read+write semantics.
+    kTakeAlias,  ///< Alias-taking semantics.
   };
 
   /// \brief A single metadata rule.
@@ -61,7 +60,7 @@ class MetadataFile {
   static std::unique_ptr<MetadataFile> LoadFromRules(absl::string_view id,
                                                      InputIterator begin,
                                                      InputIterator end) {
-    std::unique_ptr<MetadataFile> meta_file = absl::make_unique<MetadataFile>();
+    std::unique_ptr<MetadataFile> meta_file = std::make_unique<MetadataFile>();
     meta_file->id_ = std::string(id);
     for (auto rule = begin; rule != end; ++rule) {
       if (rule->whole_file) {
@@ -74,7 +73,7 @@ class MetadataFile {
   }
 
   //// Attempts to convert `mapping` to a `Rule`.
-  static absl::optional<MetadataFile::Rule> LoadMetaElement(
+  static std::optional<MetadataFile::Rule> LoadMetaElement(
       const kythe::proto::metadata::MappingRule& mapping);
 
   /// Rules to apply keyed on `begin`.

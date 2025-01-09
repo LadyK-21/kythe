@@ -18,7 +18,8 @@
 // and writes it to another file.
 //
 // Usage:
-//   write_extra_action <text_proto_file> <output_path>
+//
+//	write_extra_action <text_proto_file> <output_path>
 package main
 
 import (
@@ -26,11 +27,11 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 
 	"kythe.io/kythe/go/platform/vfs"
+	"kythe.io/kythe/go/util/log"
 
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"

@@ -1,4 +1,7 @@
-package(default_visibility = ["//kythe:default_visibility"])
+package(
+    default_visibility = ["//kythe:default_visibility"],
+    features = ["layering_check"],
+)
 
 sh_test(
     name = "basic",
@@ -54,6 +57,23 @@ sh_test(
     data = [
         "singleton_inspect_expected_error.txt",
         "singleton_inspect_input.txt",
+        "//kythe/cxx/verifier",
+    ],
+)
+
+sh_test(
+    name = "singleton_inspect_fs",
+    size = "small",
+    srcs = [
+        "test_singleton_fs.sh",
+    ],
+    args = [
+        "singleton_inspect_input_fs.txt",
+        "singleton_inspect_expected_error_fs.txt",
+    ],
+    data = [
+        "singleton_inspect_expected_error_fs.txt",
+        "singleton_inspect_input_fs.txt",
         "//kythe/cxx/verifier",
     ],
 )

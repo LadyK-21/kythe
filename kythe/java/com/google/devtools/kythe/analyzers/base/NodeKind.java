@@ -23,8 +23,6 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 /** Schema-defined Kythe node kinds. */
 public enum NodeKind {
   // Core kinds
-  ABS("abs"),
-  ABS_VAR("absvar"),
   ANCHOR("anchor"),
   CONSTANT("constant"),
   DIAGNOSTIC("diagnostic"),
@@ -48,12 +46,13 @@ public enum NodeKind {
   SUM_ENUM_CLASS("sum", "enumClass"),
   VARIABLE_EXCEPTION("variable", "local/exception"),
   VARIABLE_FIELD("variable", "field"),
+  VARIABLE_IMPORT("variable", "import"),
   VARIABLE_LOCAL("variable", "local"),
   VARIABLE_PARAMETER("variable", "local/parameter"),
   VARIABLE_RESOURCE("variable", "local/resource");
 
   private final String kind;
-  @Nullable private final String subkind;
+  private final @Nullable String subkind;
 
   NodeKind(String kind) {
     this(kind, null);

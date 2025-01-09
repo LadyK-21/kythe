@@ -10,5 +10,13 @@ template <typename T> struct S {
   //- TAppAbsFT param.2 BuiltinShort
   //- @int ref BuiltinInt
   //- @short ref BuiltinShort
-  long f<int, short>(T t) { return 1; }
+  long f<int, short>(T t);
+
+  //- @thing defines/binding AbsThing
+  template<typename U=void> U thing();
+  //  TODO(shahms): Actually support this properly.
+  //- //@thing defines/binding DepSpecNT
+  //- //DepSpecNT specializes/speculative TAppAbsNT
+  //- //TAppAbsNT param.0 AbsThing
+  template<> void thing() {}
 };

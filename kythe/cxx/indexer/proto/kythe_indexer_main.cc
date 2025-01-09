@@ -32,11 +32,12 @@
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/flags/usage.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
-#include "glog/logging.h"
 #include "google/protobuf/io/coded_stream.h"
 #include "google/protobuf/io/gzip_stream.h"
 #include "google/protobuf/io/zero_copy_stream.h"
@@ -133,8 +134,6 @@ bool ReadProtoFile(int fd, const std::string& relative_path,
   files->push_back(std::move(file_data));
   return true;
 }
-
-}  // anonymous namespace
 
 int main(int argc, char* argv[]) {
   kythe::InitializeProgram(argv[0]);
@@ -244,7 +243,7 @@ Examples:
 
   return had_error ? 1 : 0;
 }
-
+}  // anonymous namespace
 }  // namespace kythe
 
 int main(int argc, char* argv[]) { return kythe::main(argc, argv); }

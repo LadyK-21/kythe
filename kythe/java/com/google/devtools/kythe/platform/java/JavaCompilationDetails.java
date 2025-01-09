@@ -46,11 +46,11 @@ import org.checkerframework.checker.nullness.qual.Nullable;
 
 /** Provides a {@link JavacAnalyzer} with access to compilation information. */
 public class JavaCompilationDetails implements AutoCloseable {
-  @Nullable private final JavacTask javac;
+  private final @Nullable JavacTask javac;
   private final DiagnosticCollector<JavaFileObject> diagnostics;
-  @Nullable private final Iterable<? extends CompilationUnitTree> asts;
+  private final @Nullable Iterable<? extends CompilationUnitTree> asts;
   private final CompilationUnit compilationUnit;
-  @Nullable private final Throwable analysisCrash;
+  private final @Nullable Throwable analysisCrash;
   private final Charset encoding;
   private final StandardJavaFileManager fileManager;
 
@@ -66,13 +66,15 @@ public class JavaCompilationDetails implements AutoCloseable {
       CompilationUnit compilationUnit,
       FileDataProvider fileDataProvider,
       List<Processor> processors,
-      @Nullable Path temporaryDirectory) {
+      @Nullable Path temporaryDirectory,
+      List<String> additionalJavacFlags) {
 
     JavaCompiler compiler = JavacAnalysisDriver.getCompiler();
     DiagnosticCollector<JavaFileObject> diagnosticsCollector = new DiagnosticCollector<>();
 
     // Get the compilation options
-    List<String> options = optionsFromCompilationUnit(compilationUnit, processors);
+    ImmutableList<String> options = optionsFromCompilationUnit(compilationUnit, processors);
+    options = ImmutableList.<String>builder().addAll(options).addAll(additionalJavacFlags).build();
     Charset encoding = JavacOptionsUtils.getEncodingOption(options);
 
     // Create a CompilationUnitPathFileManager that uses the fileDataProvider and
@@ -208,7 +210,8 @@ public class JavaCompilationDetails implements AutoCloseable {
     ModifiableOptions arguments =
         ModifiableOptions.of(compilationUnit.getArgumentList())
             .ensureEncodingSet(DEFAULT_ENCODING)
-            .updateWithJavaOptions(compilationUnit);
+            .updateWithJavaOptions(compilationUnit)
+            .updateToMinimumSupportedSourceVersion();
 
     if (processors.isEmpty()) {
       arguments.add("-proc:none");

@@ -18,20 +18,18 @@
 //
 // Example usage:
 //
-//     bazel build kythe/go/serving/tools/kythefs
-//     # Blocks until unmounted:
-//     ./bazel-bin/kythe/go/serving/tools/kythefs/kythefs --mountpoint vfs_dir
+//	bazel build kythe/go/serving/tools/kythefs
+//	# Blocks until unmounted:
+//	./bazel-bin/kythe/go/serving/tools/kythefs/kythefs --mountpoint vfs_dir
 //
-//     # To unmount:
-//     fusermount -u vfs_dir
-//
+//	# To unmount:
+//	fusermount -u vfs_dir
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +37,7 @@ import (
 	"kythe.io/kythe/go/serving/api"
 	"kythe.io/kythe/go/util/flagutil"
 	"kythe.io/kythe/go/util/kytheuri"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/schema/facts"
 
 	"github.com/hanwen/go-fuse/fuse"
@@ -117,11 +116,10 @@ func hasDirComponent(rs []FilepathResolution) bool {
 // ResolveFilepath returns alternative resolutions of a given vfs path.
 // The multiple resolutions are due to ambiguity, which occurs due to:
 //
-//     a) The queried path pointing into a prefix of some corpus+root vfs path.
+//	a) The queried path pointing into a prefix of some corpus+root vfs path.
 //
-//     b) Overlapping corpus+root+path vfs paths. If happens, you likely need to
-//        adjust the extractor's vname mapping config.
-//
+//	b) Overlapping corpus+root+path vfs paths. If happens, you likely need to
+//	   adjust the extractor's vname mapping config.
 func (me *kytheFS) ResolveFilepath(path string) ([]FilepathResolution, error) {
 	var req ftpb.CorpusRootsRequest
 	cr, err := me.API.CorpusRoots(me.Context, &req)
@@ -166,7 +164,7 @@ func (me *kytheFS) ResolveFilepath(path string) ([]FilepathResolution, error) {
 					len(crPath) > len(longestCorpusRootForTicket) {
 
 					if longestCorpusRootForTicket != "" && !me.WarnedOverlappingPrefix {
-						log.Printf("WARNING: There is at least one overlap in corpus+root+path_prefix. "+
+						log.Warningf("There is at least one overlap in corpus+root+path_prefix. "+
 							"Path: %q (corpus+root %q), corpus+root of conflicting path: %q ",
 							path, crPath, longestCorpusRootForTicket)
 						me.WarnedOverlappingPrefix = true
@@ -216,7 +214,7 @@ func (me *kytheFS) NonEmptyCorpora(cs []*ftpb.CorpusRootsReply_Corpus) []*ftpb.C
 		if c.Name != "" {
 			res = append(res, c)
 		} else if !me.WarnedEmptyCorpus {
-			log.Printf("WARNING: found empty corpus name, skipping mapping! " +
+			log.Warningf("found empty corpus name, skipping mapping! " +
 				"Please set a corpus when extracting or indexing.")
 			me.WarnedEmptyCorpus = true
 		}
@@ -292,7 +290,7 @@ func (me *kytheFS) fetchSource(path string) ([]byte, error) {
 func (me *kytheFS) GetAttr(path string, context *fuse.Context) (*fuse.Attr, fuse.Status) {
 	resolutions, err := me.ResolveFilepath(path)
 	if err != nil {
-		log.Printf("resolution error for %q: %v", path, err)
+		log.Errorf("resolution error for %q: %v", path, err)
 		return nil, fuse.ENOENT
 	}
 
@@ -333,7 +331,7 @@ func (me *kytheFS) GetAttr(path string, context *fuse.Context) (*fuse.Attr, fuse
 func (me *kytheFS) OpenDir(path string, context *fuse.Context) (c []fuse.DirEntry, code fuse.Status) {
 	resolutions, err := me.ResolveFilepath(path)
 	if err != nil {
-		log.Printf("resolution error for %q: %v", path, err)
+		log.Errorf("resolution error for %q: %v", path, err)
 		return nil, fuse.ENOENT
 	}
 
@@ -355,7 +353,7 @@ func (me *kytheFS) OpenDir(path string, context *fuse.Context) (c []fuse.DirEntr
 			}
 			dir, err := me.API.Directory(me.Context, req)
 			if err != nil {
-				log.Printf("error fetching dir contents for %q (ticket %q): %v",
+				log.Errorf("error fetching dir contents for %q (ticket %q): %v",
 					path, r.KytheURI.String(), err)
 				return nil, fuse.ENOENT
 			}
@@ -368,7 +366,7 @@ func (me *kytheFS) OpenDir(path string, context *fuse.Context) (c []fuse.DirEntr
 				case ftpb.DirectoryReply_DIRECTORY:
 					de.Mode = fuse.S_IFDIR
 				default:
-					log.Printf("WARNING: received invalid directory entry: %v", e)
+					log.Warningf("received invalid directory entry: %v", e)
 					continue
 				}
 				ents[e.Name] = de
@@ -395,7 +393,7 @@ func (me *kytheFS) Open(path string, flags uint32, context *fuse.Context) (file 
 
 	src, err := me.fetchSource(path)
 	if err != nil {
-		log.Printf("error fetching source for %q: %v", path, err)
+		log.Errorf("error fetching source for %q: %v", path, err)
 		return nil, fuse.ENOENT
 	}
 

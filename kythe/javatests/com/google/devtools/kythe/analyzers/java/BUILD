@@ -13,7 +13,7 @@ shell_tool_test(
 
 shell_tool_test(
     name = "indexer_empty_cu_test",
-    data = ["//kythe/testdata:java_empty.kindex"],
+    data = ["//kythe/testdata:java_empty.kzip"],
     scriptfile = "indexer_empty_cu_test.sh",
     tools = {
         "entrystream": "//kythe/go/platform/tools/entrystream",
@@ -25,11 +25,11 @@ shell_tool_test(
 shell_tool_test(
     name = "indexer_source_root_test",
     data = [
-        "//kythe/javatests/com/google/devtools/kythe/analyzers/java/testdata:corner_case.kindex",
+        "//kythe/javatests/com/google/devtools/kythe/analyzers/java/testdata:corner_case.kzip",
         # Having the following sources in the Java indexer's source path caused #818.  The
-        # indexer read the .java file instead of the .class file found in corner_case.kindex,
+        # indexer read the .java file instead of the .class file found in corner_case.kzip,
         # causing javac to compile these sources without their depedencies (the transitive
-        # dependencies of corner_case.kindex's compilation).
+        # dependencies of corner_case.kzip's compilation).
         "//kythe/java/com/google/devtools/kythe/analyzers/base:corner_case_srcs",
     ],
     scriptfile = "indexer_source_root_test.sh",
@@ -55,10 +55,10 @@ java_test(
 java_library(
     name = "test_plugin",
     srcs = ["TestPlugin.java"],
-    javacopts = [
-        "--add-exports=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
-        "--add-exports=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED",
-        "--add-exports=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+    add_exports = [
+        "jdk.compiler/com.sun.tools.javac.code",
+        "jdk.compiler/com.sun.tools.javac.tree",
+        "jdk.compiler/com.sun.tools.javac.util",
     ],
     visibility = ["//kythe/javatests/com/google/devtools/kythe/analyzers/java:__subpackages__"],
     deps = [

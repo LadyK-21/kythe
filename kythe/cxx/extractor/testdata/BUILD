@@ -6,7 +6,10 @@ load(
 )
 load("//tools:build_rules/testing.bzl", "shell_tool_test")
 
-package(default_visibility = ["//kythe:default_visibility"])
+package(
+    default_visibility = ["//kythe:default_visibility"],
+    features = ["layering_check"],
+)
 
 filegroup(
     name = "skip",
@@ -23,9 +26,10 @@ cc_test(
         "//kythe/cxx/common:path_utils",
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:optional",
     ],
 )
 
@@ -36,7 +40,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -50,7 +56,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
     ],
@@ -65,7 +73,27 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "header_only_module_test",
+    srcs = ["header_only_module_test.cc"],
+    data = [
+        "header_only_module.cppmap",
+        "header_only_module.h",
+    ],
+    deps = [
+        "//kythe/cxx/extractor:testlib",
+        "//kythe/proto:analysis_cc_proto",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
     ],
@@ -82,7 +110,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -96,11 +126,15 @@ cc_test(
         "claim_b.h",
         "claim_main.cc",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         "//kythe/cxx/extractor:lib",
         "//kythe/cxx/extractor:supported_language",
         "//third_party:gmock_main",
         "//third_party:gtest",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/memory",
         "@com_google_protobuf//:protobuf",
     ],
@@ -146,7 +180,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -162,7 +198,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -177,7 +215,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -193,7 +233,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/strings",
     ],
@@ -205,11 +247,17 @@ cc_test(
     data = [
         "build_config.cc",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
         "//kythe/proto:buildinfo_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
         "@com_google_protobuf//:protobuf",
     ],
@@ -228,7 +276,9 @@ cc_test(
     deps = [
         "//kythe/cxx/extractor:testlib",
         "//kythe/proto:analysis_cc_proto",
-        "//third_party:gtest_main",
+        "//third_party:gmock_main",
+        "//third_party:gtest",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -275,7 +325,7 @@ cc_extractor_test(
 
 cc_extractor_test(
     name = "extract_verify_iostream_test",
-    size = "small",
+    size = "medium",
     srcs = [
         "extract_verify_iostream_test.cc",
     ],
@@ -289,6 +339,9 @@ objc_library(
         "arc-ignore",
         "broken",
         "manual",
+    ],
+    target_compatible_with = [
+        "@platforms//os:osx",
     ],
 )
 
@@ -305,18 +358,21 @@ objc_bazel_extractor_test(
     size = "small",
     src = "objc_lib.m",
     data = "objc_lib.xa",
-    restricted_to = ["//buildenv:darwin"],
-    # This test no longer passes, even on darwin, so do not include it in our presubmit.
+    # This test no longer passes, even on OSX, so do not include it in our presubmit.
     tags = [
         "arc-ignore",
         "broken",
         "manual",
+    ],
+    target_compatible_with = [
+        "@platforms//os:osx",
     ],
 )
 
 cc_library(
     name = "cc_lib",
     srcs = ["cc_lib.cc"],
+    copts = ["-Wno-missing-prototypes"],
 )
 
 # Test that we can use the bazel extractor to extract a .xa file, index the

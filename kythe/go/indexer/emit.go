@@ -20,15 +20,18 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/doc/comment"
 	"go/token"
 	"go/types"
-	"log"
 	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"kythe.io/kythe/go/extractors/govname"
+	"kythe.io/kythe/go/util/kytheuri"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/metadata"
 	"kythe.io/kythe/go/util/schema/edges"
 	"kythe.io/kythe/go/util/schema/facts"
@@ -38,6 +41,7 @@ import (
 	"golang.org/x/tools/go/types/typeutil"
 
 	cpb "kythe.io/kythe/proto/common_go_proto"
+	gopb "kythe.io/kythe/proto/go_go_proto"
 	spb "kythe.io/kythe/proto/storage_go_proto"
 )
 
@@ -58,6 +62,9 @@ type EmitOptions struct {
 	// If true, emit childof edges for an anchor's semantic scope.
 	EmitAnchorScopes bool
 
+	// If true, use the enclosing file for top-level callsite scopes.
+	UseFileAsTopLevelScope bool
+
 	// If set, use this as the base URL for links to godoc.  The import path is
 	// appended to the path of this URL to obtain the target URL to link to.
 	DocBase *url.URL
@@ -65,9 +72,24 @@ type EmitOptions struct {
 	// If true, the doc/uri fact is only emitted for go std library packages.
 	OnlyEmitDocURIsForStandardLibs bool
 
-	// Nodes that otherwise wouldn't have a corpus (such as tapps) are given the
-	// corpus of the compilation unit being indexed.
-	UseCompilationCorpusAsDefault bool
+	// If enabled, all VNames emitted by the indexer are assigned the
+	// compilation unit's corpus.
+	UseCompilationCorpusForAll bool
+
+	// If set, all stdlib nodes are assigned this corpus. This takes precedence
+	// over UseCompilationCorpusForAll for stdlib nodes.
+	OverrideStdlibCorpus string
+
+	// EmitRefCallOverIdentifier determines whether ref/call anchors are emitted
+	// over function identifiers (or the legacy behavior of over the entire
+	// callsite).
+	EmitRefCallOverIdentifier bool
+
+	// FlagConstructors is a set of known flag constructor functions.
+	FlagConstructors *gopb.FlagConstructors
+
+	// Verbose determines whether verbose logging is enabled.
+	Verbose bool
 }
 
 func (e *EmitOptions) emitMarkedSource() bool {
@@ -84,11 +106,39 @@ func (e *EmitOptions) emitAnchorScopes() bool {
 	return e.EmitAnchorScopes
 }
 
+func (e *EmitOptions) emitRefCallOverIdentifier() bool {
+	if e == nil {
+		return false
+	}
+	return e.EmitRefCallOverIdentifier
+}
+
+func (e *EmitOptions) emitFlagNodes() bool {
+	if e == nil {
+		return false
+	}
+	return e.FlagConstructors != nil
+}
+
+func (e *EmitOptions) useFileAsTopLevelScope() bool {
+	if e == nil {
+		return false
+	}
+	return e.UseFileAsTopLevelScope
+}
+
 // shouldEmit reports whether the indexer should emit a node for the given
 // vname.  Presently this is true if vname denotes a standard library and the
 // corresponding option is enabled.
 func (e *EmitOptions) shouldEmit(vname *spb.VName) bool {
 	return e != nil && e.EmitStandardLibs && govname.IsStandardLibrary(vname)
+}
+
+func (e *EmitOptions) docBase() string {
+	if e == nil || e.DocBase == nil {
+		return ""
+	}
+	return e.DocBase.String()
 }
 
 // docURL returns a documentation URL for the specified package, if one is
@@ -106,6 +156,13 @@ func (e *EmitOptions) docURL(pi *PackageInfo) string {
 	return u.String()
 }
 
+func (e *EmitOptions) verbose() bool {
+	if e == nil {
+		return false
+	}
+	return e.Verbose
+}
+
 // An impl records that a type A implements an interface B.
 type impl struct{ A, B types.Object }
 
@@ -117,13 +174,14 @@ func (pi *PackageInfo) Emit(ctx context.Context, sink Sink, opts *EmitOptions) e
 		opts = &EmitOptions{}
 	}
 	e := &emitter{
-		ctx:      ctx,
-		pi:       pi,
-		sink:     sink,
-		opts:     opts,
-		impl:     make(map[impl]struct{}),
-		anchored: make(map[ast.Node]struct{}),
-		fmeta:    make(map[*ast.File]bool),
+		ctx:       ctx,
+		pi:        pi,
+		sink:      sink,
+		opts:      opts,
+		impl:      make(map[impl]struct{}),
+		anchored:  make(map[ast.Node]struct{}),
+		fmeta:     make(map[*ast.File]bool),
+		variadics: make(map[*types.Slice]bool),
 	}
 
 	// Emit a node to represent the package as a whole.
@@ -172,6 +230,10 @@ func (pi *PackageInfo) Emit(ctx context.Context, sink Sink, opts *EmitOptions) e
 				e.visitIndexExpr(n, stack)
 			case *ast.IndexListExpr:
 				e.visitIndexListExpr(n, stack)
+			case *ast.ArrayType:
+				e.visitArrayType(n, stack)
+			case *ast.CallExpr:
+				e.visitCallExpr(n, stack)
 			}
 			return true
 		}), file)
@@ -182,8 +244,10 @@ func (pi *PackageInfo) Emit(ctx context.Context, sink Sink, opts *EmitOptions) e
 	e.emitSatisfactions()
 
 	// TODO(fromberger): Add diagnostics for type-checker errors.
-	for _, err := range pi.Errors {
-		log.Printf("WARNING: Type resolution error: %v", err)
+	if opts.verbose() {
+		for _, err := range pi.Errors {
+			log.WarningContextf(ctx, "Type resolution error: %v", err)
+		}
 	}
 	return e.firstErr
 }
@@ -199,6 +263,52 @@ type emitter struct {
 	anchored map[ast.Node]struct{}                // see writeAnchor
 	firstErr error
 	cmap     ast.CommentMap // current file's CommentMap
+
+	// lazily-initialized lookup table based on opts.FlagConstructors
+	flagConstructors map[string]map[string]*gopb.FlagConstructor
+
+	variadics map[*types.Slice]bool
+}
+
+type refKind int
+
+const (
+	readRef refKind = iota
+	writeRef
+	readWriteRef
+)
+
+func exprRefKind(tgt ast.Expr, stack stackFunc, depth int) refKind {
+	switch parent := stack(depth + 1).(type) {
+	case *ast.AssignStmt:
+		// Check if identifier is being assigned; we assume this is not a definition
+		// and checked by the caller.
+		for _, lhs := range parent.Lhs {
+			if lhs == tgt {
+				switch parent.Tok {
+				case token.ASSIGN, token.DEFINE:
+					return writeRef
+				default: // +=, etc.
+					return readWriteRef
+				}
+			}
+		}
+	case *ast.IncDecStmt:
+		return readWriteRef
+	case *ast.SelectorExpr:
+		if id, ok := tgt.(*ast.Ident); ok && id == parent.Sel {
+			return exprRefKind(parent, stack, depth+1)
+		}
+	case *ast.KeyValueExpr:
+		if tgt == parent.Key {
+			if c, ok := stack(depth + 2).(*ast.CompositeLit); ok {
+				if _, isMap := c.Type.(*ast.MapType); !isMap {
+					return writeRef
+				}
+			}
+		}
+	}
+	return readRef
 }
 
 // visitIdent handles referring identifiers. Declaring identifiers are handled
@@ -210,7 +320,7 @@ func (e *emitter) visitIdent(id *ast.Ident, stack stackFunc) {
 		return
 	}
 
-	if sig, ok := obj.Type().(*types.Signature); ok && sig.RecvTypeParams().Len() > 0 {
+	if sig, ok := obj.Type().(*types.Signature); ok && sig.Recv() != nil && sig.RecvTypeParams().Len() > 0 {
 		// Lookup the original non-instantiated method to reference.
 		if n, ok := deref(sig.Recv().Type()).(*types.Named); ok {
 			f, _, _ := types.LookupFieldOrMethod(n.Origin(), true, obj.Pkg(), obj.Name())
@@ -245,12 +355,29 @@ func (e *emitter) visitIdent(id *ast.Ident, stack stackFunc) {
 		})
 		return
 	}
-	ref := e.writeRef(id, target, edges.Ref)
+
+	var refs []*spb.VName
+	refKind := exprRefKind(id, stack, 0)
+	if refKind == readRef || refKind == readWriteRef {
+		refs = append(refs, e.writeRef(id, target, edges.Ref))
+	}
+	if refKind == writeRef || refKind == readWriteRef {
+		refs = append(refs, e.writeRef(id, target, edges.RefWrites))
+	}
+
 	if e.opts.emitAnchorScopes() {
-		e.writeEdge(ref, e.callContext(stack).vname, edges.ChildOf)
+		parent := e.callContext(stack).vname
+		for _, ref := range refs {
+			e.writeEdge(ref, parent, edges.ChildOf)
+		}
 	}
 	if call, ok := isCall(id, obj, stack); ok {
-		callAnchor := e.writeRef(call, target, edges.RefCall)
+		var callAnchor *spb.VName
+		if e.opts.emitRefCallOverIdentifier() {
+			callAnchor = e.writeRef(id, target, edges.RefCall)
+		} else {
+			callAnchor = e.writeRef(call, target, edges.RefCall)
+		}
 
 		// Paint an edge to the function blamed for the call, or if there is
 		// none then to the package initializer.
@@ -286,7 +413,7 @@ func (e *emitter) visitFuncDecl(decl *ast.FuncDecl, stack stackFunc) {
 	if sig.Recv() != nil {
 		// The receiver is treated as parameter 0.
 		if names := decl.Recv.List[0].Names; names != nil {
-			if recv := e.writeBinding(names[0], nodes.Variable, info.vname); recv != nil {
+			if recv := e.writeVarBinding(names[0], nodes.LocalParameter, info.vname); recv != nil {
 				e.writeEdge(info.vname, recv, edges.ParamIndex(0))
 			}
 		}
@@ -300,6 +427,22 @@ func (e *emitter) visitFuncDecl(decl *ast.FuncDecl, stack stackFunc) {
 	e.emitParameters(decl.Type, sig, info)
 }
 
+// rewrittenCorpusForVName returns the new corpus that should be assigned to the
+// given vname based on the OverrideStdlibCorpus and UseCompilationCorpusForAll options
+func (e *emitter) rewrittenCorpusForVName(v *spb.VName) string {
+	if e.opts.OverrideStdlibCorpus != "" && v.GetCorpus() == govname.GolangCorpus {
+		return e.opts.OverrideStdlibCorpus
+	}
+	if e.opts.UseCompilationCorpusForAll {
+		return e.pi.VName.GetCorpus()
+	}
+	if v.GetCorpus() == "" {
+		// If the VName doesn't specify a corpus, use the compilation unit's corpus
+		return e.pi.VName.GetCorpus()
+	}
+	return v.GetCorpus()
+}
+
 // emitTApp emits a tapp node and returns its VName.  The new tapp is emitted
 // with given constructor and parameters.  The constructor's kind is also
 // emitted if this is the first time seeing it.
@@ -310,14 +453,12 @@ func (e *emitter) emitTApp(ms *cpb.MarkedSource, ctorKind string, ctor *spb.VNam
 			e.emitBuiltinMarkedSource(ctor)
 		}
 	}
-	components := []interface{}{ctor}
+	components := []any{ctor}
 	for _, p := range params {
 		components = append(components, p)
 	}
 	v := &spb.VName{Language: govname.Language, Signature: hashSignature(components)}
-	if e.opts.UseCompilationCorpusAsDefault {
-		v.Corpus = e.pi.VName.GetCorpus()
-	}
+	v.Corpus = e.rewrittenCorpusForVName(v)
 	if e.pi.typeEmitted.Add(v.Signature) {
 		e.writeFact(v, facts.NodeKind, nodes.TApp)
 		e.writeEdge(v, ctor, edges.ParamIndex(0))
@@ -362,7 +503,11 @@ func (e *emitter) emitType(typ types.Type) *spb.VName {
 	case *types.Array:
 		v = e.emitTApp(arrayTAppMS(typ.Len()), nodes.TBuiltin, govname.ArrayConstructorType(typ.Len()), e.emitType(typ.Elem()))
 	case *types.Slice:
-		v = e.emitTApp(sliceTAppMS, nodes.TBuiltin, govname.SliceConstructorType(), e.emitType(typ.Elem()))
+		if e.variadics[typ] {
+			v = e.emitTApp(variadicTAppMS, nodes.TBuiltin, govname.VariadicConstructorType(), e.emitType(typ.Elem()))
+		} else {
+			v = e.emitTApp(sliceTAppMS, nodes.TBuiltin, govname.SliceConstructorType(), e.emitType(typ.Elem()))
+		}
 	case *types.Pointer:
 		v = e.emitTApp(pointerTAppMS, nodes.TBuiltin, govname.PointerConstructorType(), e.emitType(typ.Elem()))
 	case *types.Chan:
@@ -383,14 +528,14 @@ func (e *emitter) emitType(typ types.Type) *spb.VName {
 			}},
 		}
 
-		params := e.visitTuple(typ.Params())
-		if typ.Variadic() && len(params) > 0 {
-			// Convert last parameter type from slice type to variadic type.
-			last := len(params) - 1
+		if typ.Variadic() {
+			// Mark last parameter type as variadic.
+			last := typ.Params().Len() - 1
 			if slice, ok := typ.Params().At(last).Type().(*types.Slice); ok {
-				params[last] = e.emitTApp(variadicTAppMS, nodes.TBuiltin, govname.VariadicConstructorType(), e.emitType(slice.Elem()))
+				e.variadics[slice] = true
 			}
 		}
+		params := e.visitTuple(typ.Params())
 
 		var ret *spb.VName
 		if typ.Results().Len() == 1 {
@@ -452,7 +597,7 @@ func (e *emitter) emitType(typ types.Type) *spb.VName {
 	case *types.TypeParam:
 		v = e.pi.ObjectVName(typ.Obj())
 	default:
-		log.Printf("WARNING: unknown type %T: %+v", typ, typ)
+		log.Warningf("unknown type %T: %+v", typ, typ)
 	}
 
 	e.pi.typeVName[typ] = v
@@ -476,7 +621,7 @@ func (e *emitter) visitTuple(t *types.Tuple) []*spb.VName {
 func (e *emitter) visitFuncLit(flit *ast.FuncLit, stack stackFunc) {
 	fi := e.callContext(stack)
 	if fi == nil {
-		log.Panic("Function literal without a context: ", flit)
+		panic(fmt.Sprintf("Function literal without a context: %v", flit))
 	}
 
 	fi.numAnons++
@@ -484,7 +629,10 @@ func (e *emitter) visitFuncLit(flit *ast.FuncLit, stack stackFunc) {
 	info.vname.Language = govname.Language
 	info.vname.Signature += "$" + strconv.Itoa(fi.numAnons)
 	e.pi.function[flit] = info
-	e.writeDef(flit, info.vname)
+	def := e.writeDef(flit, info.vname)
+	if e.opts.emitAnchorScopes() {
+		e.writeEdge(def, fi.vname, edges.ChildOf)
+	}
 	e.writeFact(info.vname, facts.NodeKind, nodes.Function)
 
 	if sig, ok := e.pi.Info.Types[flit].Type.(*types.Signature); ok {
@@ -500,9 +648,13 @@ func (e *emitter) visitValueSpec(spec *ast.ValueSpec, stack stackFunc) {
 	}
 	doc := specComment(spec, stack)
 	for _, id := range spec.Names {
-		target := e.writeBinding(id, kind, e.nameContext(stack))
+		ctx := e.nameContext(stack)
+		target := e.writeBinding(id, kind, ctx)
 		if target == nil {
 			continue // type error (reported elsewhere)
+		}
+		if kind == nodes.Variable && e.isNonFileOrPackage(ctx) {
+			e.writeFact(target, facts.Subkind, nodes.Local)
 		}
 		e.writeDoc(doc, target)
 	}
@@ -518,6 +670,10 @@ func (e *emitter) visitValueSpec(spec *ast.ValueSpec, stack stackFunc) {
 	}
 }
 
+func (e *emitter) isNonFileOrPackage(v *spb.VName) bool {
+	return v.GetSignature() != "" && e.pi.VName != v
+}
+
 // visitTypeSpec handles type declarations, including the bindings for fields
 // of struct types and methods of interfaces.
 func (e *emitter) visitTypeSpec(spec *ast.TypeSpec, stack stackFunc) {
@@ -529,7 +685,12 @@ func (e *emitter) visitTypeSpec(spec *ast.TypeSpec, stack stackFunc) {
 	e.writeDef(spec, target)
 	e.writeDoc(specComment(spec, stack), target)
 
-	mapFields(spec.TypeParams, func(i int, id *ast.Ident) {
+	if e.pi.ImportPath == "builtin" {
+		// Ignore everything but defs/docs in special builtin package
+		return
+	}
+
+	mapNamedFields(spec.TypeParams, func(i int, id *ast.Ident) {
 		v := e.writeBinding(id, nodes.TVar, nil)
 		e.writeEdge(target, v, edges.TParamIndex(i))
 	})
@@ -547,7 +708,7 @@ func (e *emitter) visitTypeSpec(spec *ast.TypeSpec, stack stackFunc) {
 		// Add bindings for the explicitly-named fields in this declaration.
 		// Parent edges were already added, so skip them here.
 		if st, ok := spec.Type.(*ast.StructType); ok {
-			mapFields(st.Fields, func(i int, id *ast.Ident) {
+			mapNamedFields(st.Fields, func(i int, id *ast.Ident) {
 				target := e.writeVarBinding(id, nodes.Field, nil)
 				f := st.Fields.List[i]
 				e.writeDoc(firstNonEmptyComment(f.Doc, f.Comment), target)
@@ -594,8 +755,25 @@ func (e *emitter) visitTypeSpec(spec *ast.TypeSpec, stack stackFunc) {
 		// Add bindings for the explicitly-named methods in this declaration.
 		// Parent edges were already added, so skip them here.
 		if it, ok := spec.Type.(*ast.InterfaceType); ok {
-			mapFields(it.Methods, func(_ int, id *ast.Ident) {
-				e.writeBinding(id, nodes.Function, nil)
+			mapNamedFields(it.Methods, func(i int, id *ast.Ident) {
+				field := it.Methods.List[i]
+				target := e.writeBinding(id, nodes.Function, nil)
+				e.writeDoc(firstNonEmptyComment(field.Doc, field.Comment), target)
+
+				info := &funcInfo{vname: target}
+
+				// The interface is the anonymous receiver (param 0)
+				e.emitAnonParameter(spec.Name, 0, info)
+
+				obj := e.pi.Info.Defs[id]
+				if obj != nil {
+					sig := obj.Type().(*types.Signature)
+					if sig != nil {
+						if typ, ok := field.Type.(*ast.FuncType); ok {
+							e.emitParameters(typ, sig, info)
+						}
+					}
+				}
 			})
 		}
 
@@ -620,7 +798,11 @@ func (e *emitter) visitImportSpec(spec *ast.ImportSpec, stack stackFunc) {
 	pkg := e.pi.Dependencies[ipath]
 	target := e.pi.PackageVName[pkg]
 	if target == nil {
-		log.Printf("Unable to resolve import path %q", ipath)
+		if ipath != "C" {
+			if e.opts.verbose() {
+				log.Warningf("Unable to resolve import path %q", ipath)
+			}
+		}
 		return
 	}
 
@@ -646,7 +828,11 @@ func (e *emitter) visitAssignStmt(stmt *ast.AssignStmt, stack stackFunc) {
 		if id, _ := expr.(*ast.Ident); id != nil {
 			// Add a binding only if this is the definition site for the name.
 			if obj := e.pi.Info.Defs[id]; obj != nil && obj.Pos() == id.Pos() {
-				e.mustWriteBinding(id, nodes.Variable, up)
+				var subkind string
+				if e.isNonFileOrPackage(up) {
+					subkind = nodes.Local
+				}
+				e.writeVarBinding(id, subkind, up)
 			}
 		}
 	}
@@ -663,10 +849,10 @@ func (e *emitter) visitRangeStmt(stmt *ast.RangeStmt, stack stackFunc) {
 	// In a well-typed program, the key and value will always be identifiers.
 	up := e.nameContext(stack)
 	if key, _ := stmt.Key.(*ast.Ident); key != nil {
-		e.writeBinding(key, nodes.Variable, up)
+		e.writeVarBinding(key, "", up)
 	}
 	if val, _ := stmt.Value.(*ast.Ident); val != nil {
-		e.writeBinding(val, nodes.Variable, up)
+		e.writeVarBinding(val, "", up)
 	}
 }
 
@@ -680,7 +866,9 @@ func (e *emitter) visitCompositeLit(expr *ast.CompositeLit, stack stackFunc) {
 
 	tv, ok := e.pi.Info.Types[expr]
 	if !ok {
-		log.Printf("WARNING: Unable to determine composite literal type (%s)", e.pi.FileSet.Position(expr.Pos()))
+		if e.opts.verbose() {
+			log.Warningf("Unable to determine composite literal type (%s)", e.pi.FileSet.Position(expr.Pos()))
+		}
 		return
 	}
 	sv, ok := deref(tv.Type.Underlying()).(*types.Struct)
@@ -694,7 +882,7 @@ func (e *emitter) visitCompositeLit(expr *ast.CompositeLit, stack stackFunc) {
 		// such cases, don't try to read into the fields of a struct type if
 		// the counts don't line up. The information we emit will still be
 		// correct, we'll just miss some initializers.
-		log.Printf("ERROR: Struct has %d fields but %d initializers (skipping)", n, len(expr.Elts))
+		log.Errorf("Struct has %d fields but %d initializers (skipping)", n, len(expr.Elts))
 		return
 	}
 	for i, elt := range expr.Elts {
@@ -706,7 +894,7 @@ func (e *emitter) visitCompositeLit(expr *ast.CompositeLit, stack stackFunc) {
 		case *ast.KeyValueExpr:
 			f, ok := fieldIndex(t.Key, sv)
 			if !ok {
-				log.Printf("ERROR: Found no field index for %v (skipping)", t.Key)
+				log.Errorf("Found no field index for %v (skipping)", t.Key)
 				continue
 			}
 			e.emitPosRef(t.Value, sv.Field(f), edges.RefInit)
@@ -732,6 +920,261 @@ func (e *emitter) visitIndexListExpr(expr *ast.IndexListExpr, stack stackFunc) {
 	}
 }
 
+// visitArrayType handles references to array types.
+func (e *emitter) visitArrayType(expr *ast.ArrayType, stack stackFunc) {
+	e.emitAnonMembers(expr.Elt)
+}
+
+// visitCallExpr handles call expressions
+func (e *emitter) visitCallExpr(expr *ast.CallExpr, stack stackFunc) {
+	e.emitFlags(expr, stack)
+}
+
+var deprecatedFlagRE = regexp.MustCompile(`(?i)\bdeprecated\b`)
+
+func (e *emitter) emitFlags(expr *ast.CallExpr, stack stackFunc) {
+	if !e.opts.emitFlagNodes() {
+		return
+	}
+	var funIdent *ast.Ident
+	switch expr := expr.Fun.(type) {
+	case *ast.SelectorExpr:
+		funIdent = expr.Sel
+	case *ast.Ident:
+		funIdent = expr
+	}
+	funObj, ok := e.pi.Info.Uses[funIdent].(*types.Func)
+	if !ok {
+		return
+	}
+
+	ctor := e.flagConstructor(funObj)
+	if ctor == nil {
+		sig, ok := funObj.Type().(*types.Signature)
+		if ok && sig.Recv() == nil {
+			// Check for a flag lookup/set instead.
+			e.emitFlagLookup(expr, funObj, stack)
+			e.emitFlagSet(expr, funObj, stack)
+		}
+		return
+	}
+	// Check for expected arguments.
+	if expected := int(max(
+		ctor.NameArgPosition,
+		ctor.DescriptionArgPosition,
+		ctor.GetVarArgPosition(),
+	)); len(expr.Args) <= expected {
+		log.Errorf("Expected at least %d arguments for call to %s.%s; found %d", expected, ctor.GetPkgPath(), ctor.GetFuncName(), len(expr.Args))
+		return
+	}
+
+	// Parse the flag name
+	nameArg, ok := expr.Args[ctor.NameArgPosition].(*ast.BasicLit)
+	if !ok || nameArg.Kind != token.STRING {
+		return
+	}
+	flagName, err := strconv.Unquote(nameArg.Value)
+	if err != nil {
+		return
+	}
+
+	// Get the context of the flag to construct its VName.
+	fi := e.callContext(stack)
+	if fi == nil {
+		return
+	}
+
+	// Construct a node for the flag within the file
+	flagNode := proto.Clone(fi.vname).(*spb.VName)
+	flagNode.Language = "go"
+	flagNode.Signature = "flag " + flagName
+	e.writeFact(flagNode, facts.NodeKind, "google/gflag")
+	if e.opts.emitMarkedSource() {
+		// TODO: MarkedSource initializer
+		ms := &cpb.MarkedSource{
+			Child: []*cpb.MarkedSource{{
+				Kind:    cpb.MarkedSource_IDENTIFIER,
+				PreText: flagName,
+				Link:    []*cpb.Link{{Definition: []string{kytheuri.ToString(flagNode)}}},
+			}},
+		}
+		e.emitCode(flagNode, ms)
+	}
+	e.writeEdge(flagNode, e.flagNameNode(fi, flagName), edges.Named)
+
+	// Emit the documentation for the flag
+	if docArg, ok := expr.Args[ctor.DescriptionArgPosition].(*ast.BasicLit); ok && docArg.Kind == token.STRING {
+		if doc, err := strconv.Unquote(docArg.Value); err == nil {
+			docNode := proto.Clone(flagNode).(*spb.VName)
+			docNode.Signature += " doc"
+			e.writeFact(docNode, facts.NodeKind, nodes.Doc)
+			e.writeFact(docNode, facts.Text, doc)
+			e.writeEdge(docNode, flagNode, edges.Documents)
+
+			if deprecatedFlagRE.MatchString(doc) {
+				e.writeFact(flagNode, facts.Deprecated, "")
+			}
+		}
+	}
+
+	// Write a defines/binding over the flag name string
+	file, start, end := e.pi.Span(nameArg)
+	anchor := e.pi.AnchorVName(file, start, end)
+	e.writeAnchor(nameArg, anchor, start, end)
+	e.writeEdge(anchor, flagNode, edges.DefinesBinding)
+
+	var identDef types.Object
+	if ctor.VarArgPosition != nil {
+		identDef = e.pi.Info.Uses[findIdentifier(expr.Args[ctor.GetVarArgPosition()])]
+	} else {
+		switch parent := stack(1).(type) {
+		case *ast.ValueSpec:
+			for i, name := range parent.Names {
+				if expr == parent.Values[i] {
+					identDef = e.pi.Info.Defs[name]
+					break
+				}
+			}
+		case *ast.AssignStmt:
+			for i, v := range parent.Lhs {
+				if name, ok := v.(*ast.Ident); ok && expr == parent.Rhs[i] {
+					identDef = e.pi.Info.Defs[name]
+					break
+				}
+			}
+		}
+	}
+	if identDef == nil {
+		return
+	}
+
+	// If we found the flag definition in an assignment, associate the variable
+	// node with the flag node.
+	e.writeEdge(e.pi.ObjectVName(identDef), flagNode, edges.Denotes)
+}
+
+func (e *emitter) emitFlagLookup(expr *ast.CallExpr, funObj *types.Func, stack stackFunc) {
+	if !e.flagLookup(funObj) {
+		return
+	}
+	// flag.Lookup(name) invocation
+	if len(expr.Args) != 1 {
+		return
+	}
+	nameArg, ok := expr.Args[0].(*ast.BasicLit)
+	if !ok || nameArg.Kind != token.STRING {
+		return
+	}
+	flagName, err := strconv.Unquote(nameArg.Value)
+	if err != nil {
+		return
+	}
+
+	fi := e.callContext(stack)
+	if fi == nil {
+		return
+	}
+
+	// Write a ref over the flag name string
+	file, start, end := e.pi.Span(nameArg)
+	anchor := e.pi.AnchorVName(file, start, end)
+	e.writeAnchor(nameArg, anchor, start, end)
+	e.writeEdge(anchor, e.flagNameNode(fi, flagName), edges.Ref)
+}
+
+func (e *emitter) emitFlagSet(expr *ast.CallExpr, funObj *types.Func, stack stackFunc) {
+	if !e.flagSet(funObj) {
+		return
+	}
+	// flag.Set(name, val) invocation
+	if len(expr.Args) != 2 {
+		return
+	}
+	nameArg, ok := expr.Args[0].(*ast.BasicLit)
+	if !ok || nameArg.Kind != token.STRING {
+		return
+	}
+	flagName, err := strconv.Unquote(nameArg.Value)
+	if err != nil {
+		return
+	}
+
+	fi := e.callContext(stack)
+	if fi == nil {
+		return
+	}
+
+	// Write a ref/writes over the flag name string
+	file, start, end := e.pi.Span(nameArg)
+	anchor := e.pi.AnchorVName(file, start, end)
+	e.writeAnchor(nameArg, anchor, start, end)
+	e.writeEdge(anchor, e.flagNameNode(fi, flagName), edges.RefWrites)
+}
+
+func (e *emitter) flagNameNode(caller *funcInfo, flagName string) *spb.VName {
+	nameNode := &spb.VName{
+		Corpus:    caller.vname.Corpus,
+		Language:  "flag",
+		Signature: flagName,
+	}
+	e.writeFact(nameNode, facts.NodeKind, "name")
+	return nameNode
+}
+
+func findIdentifier(expr ast.Expr) *ast.Ident {
+	for expr != nil {
+		switch e := expr.(type) {
+		case *ast.SelectorExpr:
+			return e.Sel
+		case *ast.UnaryExpr:
+			if e.Op != token.AND {
+				return nil
+			}
+			expr = e.X
+		case *ast.Ident:
+			return e
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+func (e *emitter) flagLookup(f *types.Func) bool {
+	pkg := f.Pkg()
+	return pkg != nil && pkg.Name() == "flag" && f.Name() == "Lookup"
+}
+
+func (e *emitter) flagSet(f *types.Func) bool {
+	pkg := f.Pkg()
+	return pkg != nil && pkg.Name() == "flag" && f.Name() == "Set"
+}
+
+func (e *emitter) flagConstructor(f *types.Func) *gopb.FlagConstructor {
+	if e.flagConstructors == nil {
+		// Initial the flag constructor lookup table.
+		e.flagConstructors = map[string]map[string]*gopb.FlagConstructor{}
+		for _, ctor := range e.opts.FlagConstructors.GetFlag() {
+			pkg := e.flagConstructors[ctor.GetPkgPath()]
+			if pkg == nil {
+				pkg = map[string]*gopb.FlagConstructor{}
+				e.flagConstructors[ctor.GetPkgPath()] = pkg
+			}
+			pkg[ctor.GetFuncName()] = ctor
+		}
+	}
+	pkg := f.Pkg()
+	if pkg == nil {
+		return nil
+	}
+	sig, ok := f.Type().(*types.Signature)
+	if !ok || sig.Recv() != nil {
+		// We only handle top-level flags
+		return nil
+	}
+	return e.flagConstructors[pkg.Path()][f.Name()]
+}
+
 // emitPosRef emits an anchor spanning loc, pointing to obj.
 func (e *emitter) emitPosRef(loc ast.Node, obj types.Object, kind string) {
 	target := e.pi.ObjectVName(obj)
@@ -753,30 +1196,52 @@ func (e *emitter) emitParameters(ftype *ast.FuncType, sig *types.Signature, info
 	}
 
 	// Emit bindings and parameter edges for the parameters.
-	mapFields(ftype.Params, func(i int, id *ast.Ident) {
+	mapAllFields(ftype.Params, func(i int, id *ast.Ident) {
 		if sig.Params().At(i) != nil {
-			if param := e.writeBinding(id, nodes.Variable, info.vname); param != nil {
-				e.writeEdge(info.vname, param, edges.ParamIndex(paramIndex))
+			field := ftype.Params.List[i]
+			e.emitAnonMembers(field.Type)
 
-				field := ftype.Params.List[i]
-				e.emitAnonMembers(field.Type)
+			if param := e.writeVarBinding(id, nodes.LocalParameter, info.vname); param != nil {
+				e.writeEdge(info.vname, param, edges.ParamIndex(paramIndex))
 
 				// Field object does not associate any comments with the parameter; use CommentMap to find them
 				e.writeDoc(firstNonEmptyComment(e.cmap.Filter(field).Comments()...), param)
+			} else if typ, ok := field.Type.(*ast.Ident); ok {
+				// Unnamed function parameter
+				e.emitAnonParameter(typ, paramIndex, info)
 			}
 		}
 		paramIndex++
 	})
 	// Emit bindings for any named result variables.
 	// Results are not considered parameters.
-	mapFields(ftype.Results, func(i int, id *ast.Ident) {
-		e.writeBinding(id, nodes.Variable, info.vname)
+	mapNamedFields(ftype.Results, func(i int, id *ast.Ident) {
+		e.writeVarBinding(id, "", info.vname)
 	})
 	// Emit bindings for type parameters
-	mapFields(ftype.TypeParams, func(i int, id *ast.Ident) {
+	mapNamedFields(ftype.TypeParams, func(i int, id *ast.Ident) {
 		v := e.writeBinding(id, nodes.TVar, nil)
 		e.writeEdge(info.vname, v, edges.TParamIndex(i))
 	})
+}
+
+func (e *emitter) emitAnonParameter(typ *ast.Ident, paramIndex int, info *funcInfo) {
+	info.numAnons++
+	param := proto.Clone(info.vname).(*spb.VName)
+	param.Signature += "$" + strconv.Itoa(info.numAnons)
+	e.writeFact(param, facts.NodeKind, nodes.Variable)
+	e.writeFact(param, facts.Subkind, nodes.LocalParameter)
+	e.writeEdge(info.vname, param, edges.ParamIndex(paramIndex))
+	if e.opts.emitMarkedSource() {
+		ms := &cpb.MarkedSource{
+			// An unnamed parameter will only have a MarkedSource.TYPE
+			Child: []*cpb.MarkedSource{{
+				Kind:    cpb.MarkedSource_TYPE,
+				PreText: typ.String(),
+			}},
+		}
+		e.emitCode(param, ms)
+	}
 }
 
 // emitAnonMembers checks whether expr denotes an anonymous struct or interface
@@ -785,12 +1250,12 @@ func (e *emitter) emitParameters(ftype *ast.FuncType, sig *types.Signature, info
 // we do capture documentation in the unlikely event someone wrote any.
 func (e *emitter) emitAnonMembers(expr ast.Expr) {
 	if st, ok := expr.(*ast.StructType); ok {
-		mapFields(st.Fields, func(i int, id *ast.Ident) {
+		mapNamedFields(st.Fields, func(i int, id *ast.Ident) {
 			target := e.writeVarBinding(id, nodes.Field, nil) // no parent
 			e.writeDoc(firstNonEmptyComment(st.Fields.List[i].Doc, st.Fields.List[i].Comment), target)
 		})
 	} else if it, ok := expr.(*ast.InterfaceType); ok {
-		mapFields(it.Methods, func(i int, id *ast.Ident) {
+		mapNamedFields(it.Methods, func(i int, id *ast.Ident) {
 			target := e.writeBinding(id, nodes.Function, nil) // no parent
 			e.writeDoc(firstNonEmptyComment(it.Methods.List[i].Doc, it.Methods.List[i].Comment), target)
 		})
@@ -965,7 +1430,7 @@ func isInterface(typ types.Type) bool { _, ok := typ.Underlying().(*types.Interf
 func (e *emitter) check(err error) {
 	if err != nil && e.firstErr == nil {
 		e.firstErr = err
-		log.Printf("ERROR indexing %q: %v", e.pi.ImportPath, err)
+		log.Errorf("indexing %q: %v", e.pi.ImportPath, err)
 	}
 }
 
@@ -985,39 +1450,43 @@ func (e *emitter) writeSatisfies(src, tgt types.Object) {
 }
 
 func (e *emitter) writeFact(src *spb.VName, name, value string) {
-	if e.opts.UseCompilationCorpusAsDefault {
+	if corpus := e.rewrittenCorpusForVName(src); corpus != src.GetCorpus() {
 		src = proto.Clone(src).(*spb.VName)
-		src.Corpus = e.pi.VName.GetCorpus()
+		src.Corpus = corpus
 	}
 	e.check(e.sink.writeFact(e.ctx, src, name, value))
 }
 
 func (e *emitter) writeEdge(src, tgt *spb.VName, kind string) {
-	if e.opts.UseCompilationCorpusAsDefault {
+	if corpus := e.rewrittenCorpusForVName(src); corpus != src.GetCorpus() {
 		src = proto.Clone(src).(*spb.VName)
-		src.Corpus = e.pi.VName.GetCorpus()
+		src.Corpus = corpus
+	}
+	if corpus := e.rewrittenCorpusForVName(tgt); corpus != tgt.GetCorpus() {
 		tgt = proto.Clone(tgt).(*spb.VName)
-		tgt.Corpus = e.pi.VName.GetCorpus()
+		tgt.Corpus = corpus
 	}
 	e.check(e.sink.writeEdge(e.ctx, src, tgt, kind))
 }
 
 func (e *emitter) writeAnchor(node ast.Node, src *spb.VName, start, end int) {
-	if e.opts.UseCompilationCorpusAsDefault {
+	if corpus := e.rewrittenCorpusForVName(src); corpus != src.GetCorpus() {
 		src = proto.Clone(src).(*spb.VName)
-		src.Corpus = e.pi.VName.GetCorpus()
+		src.Corpus = corpus
 	}
 	if _, ok := e.anchored[node]; ok {
 		return // this node already has an anchor
 	}
-	e.anchored[node] = struct{}{}
+	if node != nil {
+		e.anchored[node] = struct{}{}
+	}
 	e.check(e.sink.writeAnchor(e.ctx, src, start, end))
 }
 
 func (e *emitter) writeDiagnostic(src *spb.VName, d diagnostic) {
-	if e.opts.UseCompilationCorpusAsDefault {
+	if corpus := e.rewrittenCorpusForVName(src); corpus != src.GetCorpus() {
 		src = proto.Clone(src).(*spb.VName)
-		src.Corpus = e.pi.VName.GetCorpus()
+		src.Corpus = corpus
 	}
 	e.check(e.sink.writeDiagnostic(e.ctx, src, d))
 }
@@ -1045,25 +1514,28 @@ func (e *emitter) writeRef(origin ast.Node, target *spb.VName, kind string) *spb
 		} else {
 			e.writeEdge(target, rule.VName, rule.EdgeOut)
 		}
+		if rule.Semantic != nil {
+			e.writeFact(target, facts.SemanticGenerated, strings.ToLower(rule.Semantic.String()))
+		}
 		if rule.EdgeOut == edges.Generates && !e.fmeta[file] {
 			e.fmeta[file] = true
 			if rule.VName.Path != "" && target.Path != "" {
-				ruleVName := *rule.VName
-				ruleVName.Signature = ""
-				ruleVName.Language = ""
-				fileTarget := *anchor
-				fileTarget.Signature = ""
-				fileTarget.Language = ""
+				ruleVName := narrowToFileVName(rule.VName)
+				fileTarget := narrowToFileVName(anchor)
 				if rule.Reverse {
-					e.writeEdge(&ruleVName, &fileTarget, rule.EdgeOut)
+					e.writeEdge(ruleVName, fileTarget, rule.EdgeOut)
 				} else {
-					e.writeEdge(&fileTarget, &ruleVName, rule.EdgeOut)
+					e.writeEdge(fileTarget, ruleVName, rule.EdgeOut)
 				}
 			}
 		}
 	})
 
 	return anchor
+}
+
+func narrowToFileVName(v *spb.VName) *spb.VName {
+	return &spb.VName{Corpus: v.GetCorpus(), Root: v.GetRoot(), Path: v.GetPath()}
 }
 
 // mustWriteBinding is as writeBinding, but panics if id does not resolve.  Use
@@ -1090,13 +1562,21 @@ func (e *emitter) writeVarBinding(id *ast.Ident, subkind string, parent *spb.VNa
 // is also emitted at id. If parent != nil, the target is also recorded as its
 // child. The target vname is returned.
 func (e *emitter) writeBinding(id *ast.Ident, kind string, parent *spb.VName) *spb.VName {
+	if id == nil {
+		return nil
+	}
 	obj := e.pi.Info.Defs[id]
 	if obj == nil {
 		loc := e.pi.FileSet.Position(id.Pos())
-		log.Printf("ERROR: Missing definition for id %q at %s", id.Name, loc)
+		log.Errorf("Missing definition for id %q at %s", id.Name, loc)
 		return nil
 	}
 	target := e.pi.ObjectVName(obj)
+	if e.pi.ImportPath == "builtin" && parent != nil && (parent.GetSignature() == "package" || parent.GetSignature() == "") {
+		// Special-case top-level builtin bindings: https://pkg.go.dev/builtin
+		target = govname.Builtin(id.String())
+		kind = "tbuiltin"
+	}
 	if kind != "" {
 		e.writeFact(target, facts.NodeKind, kind)
 	}
@@ -1107,7 +1587,7 @@ func (e *emitter) writeBinding(id *ast.Ident, kind string, parent *spb.VName) *s
 		e.writeEdge(target, parent, edges.ChildOf)
 	}
 	if e.opts.emitMarkedSource() {
-		e.emitCode(target, e.pi.MarkedSource(obj))
+		e.emitCode(target, e.MarkedSource(obj))
 	}
 	e.writeEdge(target, e.emitTypeOf(id), edges.Typed)
 	return target
@@ -1115,8 +1595,8 @@ func (e *emitter) writeBinding(id *ast.Ident, kind string, parent *spb.VName) *s
 
 // writeDef emits a spanning anchor and defines edge for the specified node.
 // This function does not create the target node.
-func (e *emitter) writeDef(node ast.Node, target *spb.VName) {
-	e.writeRef(node, target, edges.Defines)
+func (e *emitter) writeDef(node ast.Node, target *spb.VName) *spb.VName {
+	return e.writeRef(node, target, edges.Defines)
 }
 
 // writeDoc adds associations between comment groups and a documented node.
@@ -1125,16 +1605,173 @@ func (e *emitter) writeDoc(comments *ast.CommentGroup, target *spb.VName) {
 	if comments == nil || len(comments.List) == 0 || target == nil {
 		return
 	}
+
 	var lines []string
 	for _, comment := range comments.List {
 		lines = append(lines, trimComment(comment.Text))
 	}
+	trimmedComment := strings.Join(lines, "\n")
+
 	docNode := proto.Clone(target).(*spb.VName)
 	docNode.Signature += " doc"
 	e.writeFact(docNode, facts.NodeKind, nodes.Doc)
-	e.writeFact(docNode, facts.Text, escComment.Replace(strings.Join(lines, "\n")))
+	e.writeFact(docNode, facts.Text, escComment.Replace(trimmedComment))
 	e.writeEdge(docNode, target, edges.Documents)
 	e.emitDeprecation(target, lines)
+
+	e.emitDocLinks(comments, trimmedComment)
+}
+
+func (e *emitter) emitDocLinks(comments *ast.CommentGroup, trimmedComment string) {
+	// Tree traversal functions for [*comment.Block]s
+	var visitBlock func(comment.Block)
+	var visitText func(comment.Text) string
+
+	// Simply visit each [comment.Block] to find all [comment.Text] nodes
+	visitBlock = func(b comment.Block) {
+		switch b := b.(type) {
+		case *comment.Paragraph:
+			for _, t := range b.Text {
+				visitText(t)
+			}
+		case *comment.List:
+			for _, item := range b.Items {
+				for _, sub := range item.Content {
+					visitBlock(sub)
+				}
+			}
+		case *comment.Heading:
+			for _, t := range b.Text {
+				visitText(t)
+			}
+		case *comment.Code:
+		// nothing to traverse
+		default:
+			log.Errorf("Unknown comment.Block type: %T", b)
+		}
+	}
+
+	// Keep track of last seen doc link offset so we can handle duplicates
+	lastOffset := -1
+	lastLine := 0
+
+	// Emit refs for DocLinks; returns the text string for the visited Text
+	visitText = func(t comment.Text) string {
+		switch t := t.(type) {
+		case comment.Plain:
+			return string(t)
+		case comment.Italic:
+			return string(t)
+		case *comment.Link:
+			var text string
+			for _, sub := range t.Text {
+				text += visitText(sub)
+			}
+			return text
+		case *comment.DocLink:
+			// Reconstruct the text of the DocLink to find its position.
+			text := "["
+			for _, sub := range t.Text {
+				text += visitText(sub)
+			}
+			text += "]"
+
+			target := e.resolveDocLink(t)
+			if target == nil {
+				if e.opts.verbose() {
+					log.Warningf("Cannot resolve DocLink: %s", t.DefaultURL(e.opts.docBase()))
+				}
+				return text
+			}
+
+			for i := lastLine; i < len(comments.List); i++ {
+				c := comments.List[i]
+				file, start, end := e.pi.Span(c)
+				lineOffset := 0
+				if lastOffset >= start && lastOffset <= end {
+					lineOffset = lastOffset - start
+				}
+
+				pos := strings.Index(c.Text[lineOffset:], text)
+				if pos < 0 {
+					continue
+				}
+				pos += lineOffset
+				lastOffset = start + pos + len(text)
+				lastLine = i
+
+				linkStart, linkEnd := pos+start, pos+start+len(text)
+				anchor := e.pi.AnchorVName(file, linkStart, linkEnd)
+				e.writeAnchor(nil, anchor, linkStart, linkEnd)
+				e.writeEdge(anchor, target, edges.RefDoc)
+
+				return text
+			}
+
+			log.Errorf("Failed to find DocLink: %q", text)
+			return text
+		default:
+			log.Errorf("Unknown comment.Text type: %T", t)
+			return ""
+		}
+	}
+
+	parser := &comment.Parser{
+		LookupPackage: func(name string) (string, bool) {
+			if e.pi.Name == name {
+				return e.pi.ImportPath, true
+			}
+			for _, d := range e.pi.Dependencies {
+				if d.Name() == name {
+					return d.Path(), true
+				}
+			}
+			return "", false
+		},
+		// Assume all symbols are valid; we'll check them in [visitText]
+		LookupSym: func(recv, name string) bool { return true },
+	}
+
+	doc := parser.Parse(trimmedComment)
+	for _, c := range doc.Content {
+		visitBlock(c)
+	}
+}
+
+func (e *emitter) resolveDocLink(link *comment.DocLink) *spb.VName {
+	scope := e.pi.Package.Scope()
+	if pkg := e.pi.Dependencies[link.ImportPath]; pkg != nil {
+		scope = pkg.Scope()
+	}
+
+	switch {
+	case link.Name == "" && link.Recv == "":
+		// Package reference
+		if pkg := e.pi.Dependencies[link.ImportPath]; pkg != nil {
+			return e.pi.PackageVName[pkg]
+		}
+		if e.pi.ImportPath == link.ImportPath {
+			return e.pi.PackageVName[e.pi.Package]
+		}
+	case link.Recv != "":
+		// Member reference
+		if recv := scope.Lookup(link.Recv); recv != nil && recv.Pkg() != nil {
+			if n, ok := deref(recv.Type()).(*types.Named); ok {
+				obj, _, _ := types.LookupFieldOrMethod(n.Origin(), true, recv.Pkg(), link.Name)
+				if obj != nil {
+					return e.pi.ObjectVName(obj)
+				}
+			}
+		}
+	case link.Name != "":
+		// Simple name reference
+		if obj := scope.Lookup(link.Name); obj != nil {
+			return e.pi.ObjectVName(obj)
+		}
+	default:
+		log.Errorf("Unknown DocLink shape: %+v", link)
+	}
+	return nil
 }
 
 // emitDeprecation emits a deprecated fact for the specified target if the
@@ -1186,6 +1823,9 @@ func (e *emitter) callContext(stack stackFunc) *funcInfo {
 		case *ast.FuncDecl, *ast.FuncLit:
 			return e.pi.function[p]
 		case *ast.File:
+			if e.opts.useFileAsTopLevelScope() {
+				return &funcInfo{vname: e.pi.FileVName(p)}
+			}
 			fi := e.pi.packageInit[p]
 			if fi == nil {
 				// Lazily emit a virtual node to represent the static
@@ -1299,13 +1939,30 @@ func deref(T types.Type) types.Type {
 	return T
 }
 
-// mapFields applies f to each identifier declared in fields.  Each call to f
-// is given the offset and the identifier.
-func mapFields(fields *ast.FieldList, f func(i int, id *ast.Ident)) {
+// mapNamedFields applies f to each identifier declared in fields.  Each call to
+// f is given the offset and the identifier.
+func mapNamedFields(fields *ast.FieldList, f func(i int, id *ast.Ident)) {
+	mapFields(fields, f, false)
+}
+
+// mapAllFields applies f to each identifier declared in fields.  Each call to f
+// is given the offset and the identifier.  If a field has no names, nil is
+// passed to f as the Ident.
+func mapAllFields(fields *ast.FieldList, f func(i int, id *ast.Ident)) {
+	mapFields(fields, f, true)
+}
+
+// mapFields applies f to each identifier declared in fields.  Each call to f is
+// given the offset and the identifier.  If a field has no names and
+// includeUnnamed is true, nil is passed to f as the Ident.
+func mapFields(fields *ast.FieldList, f func(i int, id *ast.Ident), includeUnnamed bool) {
 	if fields == nil {
 		return
 	}
 	for i, field := range fields.List {
+		if includeUnnamed && len(field.Names) == 0 {
+			f(i, nil)
+		}
 		for _, id := range field.Names {
 			f(i, id)
 		}
@@ -1399,7 +2056,7 @@ func assignableTo(tctx *types.Context, V, T types.Type) bool {
 
 	vinst, err := types.Instantiate(tctx, V, targs, true)
 	if err != nil {
-		log.Printf("ERROR: type parameters should satisfy their own constraints: %v", err)
+		log.Errorf("type parameters should satisfy their own constraints: %v", err)
 		return false
 	}
 

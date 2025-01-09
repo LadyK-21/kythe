@@ -6,15 +6,13 @@
 @end
 
 // No source range defines BoxDecl since this is a generic type.
-//- @Box defines/binding BoxAbs
-//- BoxDecl childof BoxAbs
+//- @Box defines/binding BoxDecl
 //- @FooType defines/binding FooTypeVar
 //- @BarType defines/binding BarTypeVar
-//- FooTypeVar.node/kind absvar
-//- BarTypeVar.node/kind absvar
-//- BoxAbs.node/kind abs
-//- BoxAbs param.0 FooTypeVar
-//- BoxAbs param.1 BarTypeVar
+//- FooTypeVar.node/kind tvar
+//- BarTypeVar.node/kind tvar
+//- BoxDecl tparam.0 FooTypeVar
+//- BoxDecl tparam.1 BarTypeVar
 @interface Box<FooType, BarType> : O
 
 //- @BarType ref BarTypeVar

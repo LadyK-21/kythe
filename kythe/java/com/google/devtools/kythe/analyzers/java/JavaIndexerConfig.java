@@ -18,20 +18,10 @@ package com.google.devtools.kythe.analyzers.java;
 
 import com.beust.jcommander.Parameter;
 import com.google.devtools.kythe.analyzers.base.IndexerConfig;
+import java.util.ArrayList;
+import java.util.List;
 
 public class JavaIndexerConfig extends IndexerConfig {
-  @Parameter(names = "--generics_structure", description = "Structure to emit for generics.")
-  private GenericsStructure genericsStructure = GenericsStructure.ABS;
-
-  public enum GenericsStructure {
-    // Emit the legacy { n -[childof]-> abs -[param.#]-> absvar } structure
-    // See: https://kythe.io/docs/schema/#absvar
-    ABS,
-    // Emit the { n -[tparam.#]-> tvar } structure
-    // See: https://kythe.io/docs/schema/#tvar
-    TPARAM;
-  }
-
   @Parameter(
       names = "--emit_doc_for_non_javadoc",
       description = "Emit documentation nodes for non-javadoc comments")
@@ -85,12 +75,21 @@ public class JavaIndexerConfig extends IndexerConfig {
       description = "Use the CompilationUnit VName corpus as the default.")
   private boolean useCompilationCorpusAsDefault;
 
+  @Parameter(
+      names = "--emit_ref_call_over_identifier",
+      description = "If true, emit ref/call anchor spans over the function identifier")
+  private boolean emitRefCallOverIdentifier;
+
+  @Parameter(
+      names = "--emit_native_method_names",
+      description = "If true, emit csymbol nodes for native methods")
+  private boolean emitNativeMethodNames;
+
+  @Parameter(names = "--additional_javac_flags", description = "Additional flags to pass to javac")
+  private List<String> additionalJavacFlags = new ArrayList<>();
+
   public JavaIndexerConfig(String programName) {
     super(programName);
-  }
-
-  public final GenericsStructure getGenericsStructure() {
-    return genericsStructure;
   }
 
   public final boolean getIgnoreVNamePaths() {
@@ -125,9 +124,16 @@ public class JavaIndexerConfig extends IndexerConfig {
     return useCompilationCorpusAsDefault;
   }
 
-  public JavaIndexerConfig setGenericsStructure(GenericsStructure genericsStructure) {
-    this.genericsStructure = genericsStructure;
-    return this;
+  public boolean getEmitRefCallOverIdentifier() {
+    return emitRefCallOverIdentifier;
+  }
+
+  public boolean getEmitNativeMethodNames() {
+    return emitNativeMethodNames;
+  }
+
+  public List<String> getAdditionalJavacFlags() {
+    return additionalJavacFlags;
   }
 
   public JavaIndexerConfig setIgnoreVNamePaths(boolean ignoreVNamePaths) {
@@ -167,6 +173,21 @@ public class JavaIndexerConfig extends IndexerConfig {
 
   public JavaIndexerConfig setUseCompilationCorpusAsDefault(boolean useCompilationCorpusAsDefault) {
     this.useCompilationCorpusAsDefault = useCompilationCorpusAsDefault;
+    return this;
+  }
+
+  public JavaIndexerConfig setRefCallOverIdentifier(boolean emitRefCallOverIdentifier) {
+    this.emitRefCallOverIdentifier = emitRefCallOverIdentifier;
+    return this;
+  }
+
+  public JavaIndexerConfig setEmitNativeMethodNames(boolean emitNativeMethodNames) {
+    this.emitNativeMethodNames = emitNativeMethodNames;
+    return this;
+  }
+
+  public JavaIndexerConfig setAdditionalJavacFlags(List<String> additionalFlags) {
+    this.additionalJavacFlags = additionalFlags;
     return this;
   }
 }

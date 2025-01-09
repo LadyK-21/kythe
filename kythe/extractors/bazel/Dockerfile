@@ -12,17 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM debian:sid
+FROM debian:stable-slim
 
 # Install C++ compilers and other deps
-# note that openjdk-8-jdk is a dependency of the java extractor
-RUN apt-get update && \
-    apt-get install -y git clang-11 build-essential zip python openjdk-8-jdk && \
+# note that openjdk-11-jdk-headless is a dependency of the java extractor
+RUN apt-get update -y && \
+    # This is temporary until Debian starts shipping merged /usr directories in their images
+    apt-mark hold usrmerge usr-is-merged && \
+    apt-get upgrade -y && \
+    apt-get install -y git clang-15 build-essential zip python3 openjdk-17-jdk-headless curl && \
     apt-get clean
 
 # Create clang symlinks
-RUN ln -s /usr/bin/clang-11 /usr/bin/clang && \
-    ln -s /usr/bin/clang++-11 /usr/bin/clang++
+RUN ln -s /usr/bin/clang-15 /usr/bin/clang && \
+    ln -s /usr/bin/clang++-15 /usr/bin/clang++
 
 RUN echo 'build --client_env=CC=/usr/bin/clang' >> ~/.bazelrc
 RUN echo 'build --client_env=CXX=/usr/bin/clang++' >> ~/.bazelrc
@@ -38,8 +41,12 @@ ADD kythe/extractors/bazel/extract.sh /kythe/
 ADD kythe/extractors/bazel/bazel_wrapper.sh /kythe/
 ADD kythe/release/base/fix_permissions.sh /kythe/
 
-# Bazelisk
-ADD external/com_github_bazelbuild_bazelisk/bazelisk_/bazelisk /kythe/
+# Fetch the latest version of Bazelisk for AMD64 Linux from GitHub
+RUN curl -s https://api.github.com/repos/bazelbuild/bazelisk/releases/latest \
+        | sed -n '/browser_download_url/s/[^:]*:[^"]*\("[^"]*"\).*/url = \1/p' \
+        | grep bazelisk-linux-amd64 \
+        | curl -L -o /kythe/bazelisk -K - \
+        && chmod +x /kythe/bazelisk
 
 RUN mkdir -p /workspace
 WORKDIR /workspace

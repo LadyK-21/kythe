@@ -21,11 +21,16 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "absl/memory/memory.h"
+#include <memory>
+#include <optional>
+#include <string_view>
+
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/strip.h"
 #include "assertions.h"
-#include "glog/logging.h"
 #include "google/protobuf/text_format.h"
+#include "google/protobuf/util/json_util.h"
 #include "kythe/cxx/common/kythe_uri.h"
 #include "kythe/cxx/common/scope_guard.h"
 #include "kythe/cxx/verifier/souffle_interpreter.h"
@@ -335,10 +340,7 @@ static bool FastLookupFactLessThan(AstNode* a, AstNode* b) {
 // look at deferring to a pre-existing system.
 class Solver {
  public:
-  using Inspection = AssertionParser::Inspection;
-
-  Solver(Verifier* context, Database& database,
-         std::multimap<std::pair<size_t, size_t>, AstNode*>& anchors,
+  Solver(Verifier* context, Database& database, AnchorMap& anchors,
          std::function<bool(Verifier*, const Inspection&)>& inspect)
       : context_(*context),
         database_(database),
@@ -579,7 +581,7 @@ class Solver {
  private:
   Verifier& context_;
   Database& database_;
-  std::multimap<std::pair<size_t, size_t>, AstNode*>& anchors_;
+  AnchorMap& anchors_;
   std::function<bool(Verifier*, const Inspection&)>& inspect_;
   size_t highest_group_reached_ = 0;
   size_t highest_goal_reached_ = 0;
@@ -630,7 +632,10 @@ Verifier::Verifier(bool trace_lex, bool trace_parse)
   builtin_location_.initialize(&builtin_location_name_);
   builtin_location_.begin.column = 1;
   builtin_location_.end.column = 1;
-  empty_string_id_ = IdentifierFor(builtin_location_, "");
+  auto* empty_string = IdentifierFor(builtin_location_, "");
+  empty_string_id_ = empty_string;
+  empty_string_sym_ = empty_string->symbol();
+  default_file_corpus_ = empty_string;
   fact_id_ = IdentifierFor(builtin_location_, "fact");
   vname_id_ = IdentifierFor(builtin_location_, "vname");
   kind_id_ = IdentifierFor(builtin_location_, "/kythe/node/kind");
@@ -643,6 +648,7 @@ Verifier::Verifier(bool trace_lex, bool trace_parse)
   file_id_ = IdentifierFor(builtin_location_, "file");
   text_id_ = IdentifierFor(builtin_location_, "/kythe/text");
   code_id_ = IdentifierFor(builtin_location_, "/kythe/code");
+  code_json_id_ = IdentifierFor(builtin_location_, "/kythe/code/json");
   marked_source_child_id_ =
       IdentifierFor(builtin_location_, "/kythe/edge/child");
   marked_source_box_id_ = IdentifierFor(builtin_location_, "BOX");
@@ -652,6 +658,7 @@ Verifier::Verifier(bool trace_lex, bool trace_parse)
   marked_source_context_id_ = IdentifierFor(builtin_location_, "CONTEXT");
   marked_source_initializer_id_ =
       IdentifierFor(builtin_location_, "INITIALIZER");
+  marked_source_modifier_id_ = IdentifierFor(builtin_location_, "MODIFIER");
   marked_source_parameter_lookup_by_param_id_ =
       IdentifierFor(builtin_location_, "PARAMETER_LOOKUP_BY_PARAM");
   marked_source_lookup_by_param_id_ =
@@ -695,7 +702,7 @@ void Verifier::SetGoalCommentPrefix(const std::string& it) {
 
 bool Verifier::SetGoalCommentRegex(const std::string& regex,
                                    std::string* error) {
-  auto re2 = absl::make_unique<RE2>(regex);
+  auto re2 = std::make_unique<RE2>(regex);
   if (re2->error_code() != RE2::NoError) {
     if (error) {
       *error = re2->error();
@@ -716,7 +723,10 @@ bool Verifier::SetGoalCommentRegex(const std::string& regex,
   return true;
 }
 
-bool Verifier::LoadInlineProtoFile(const std::string& file_data) {
+bool Verifier::LoadInlineProtoFile(const std::string& file_data,
+                                   absl::string_view path,
+                                   absl::string_view root,
+                                   absl::string_view corpus) {
   kythe::proto::Entries entries;
   bool ok = google::protobuf::TextFormat::ParseFromString(file_data, &entries);
   if (!ok) {
@@ -730,8 +740,10 @@ bool Verifier::LoadInlineProtoFile(const std::string& file_data) {
     }
   }
   Symbol empty = symbol_table_.intern("");
-  return parser_.ParseInlineRuleString(file_data, *kStandardIn, empty, empty,
-                                       empty, "\\s*\\#\\-(.*)");
+  return parser_.ParseInlineRuleString(
+      file_data, *kStandardIn, symbol_table_.intern(std::string(path)),
+      symbol_table_.intern(std::string(root)),
+      symbol_table_.intern(std::string(corpus)), "\\s*\\#\\-(.*)");
 }
 
 bool Verifier::LoadInlineRuleFile(const std::string& filename) {
@@ -756,16 +768,26 @@ bool Verifier::LoadInlineRuleFile(const std::string& filename) {
   Symbol content_sym = symbol_table_.intern(content);
   if (file_vnames_) {
     auto vname = content_to_vname_.find(content_sym);
-    if (vname == content_to_vname_.end()) {
+    if (vname != content_to_vname_.end()) {
+      return LoadInMemoryRuleFile(filename, vname->second, content_sym);
+    }
+    if (allow_missing_file_vnames_) {
+      LOG(WARNING) << "Could not find a file node for " << filename
+                   << "; using default.";
+    } else {
       LOG(ERROR) << "Could not find a file node for " << filename;
       return false;
     }
-    return LoadInMemoryRuleFile(filename, vname->second, content_sym);
-  } else {
-    kythe::proto::VName empty;
-    auto* vname = ConvertVName(yy::location{}, empty);
-    return LoadInMemoryRuleFile(filename, vname, content_sym);
   }
+  AstNode** values = (AstNode**)arena_.New(sizeof(AstNode*) * 5);
+  values[0] = empty_string_id_;
+  values[1] = default_file_corpus_;
+  values[2] = empty_string_id_;
+  values[3] = IdentifierFor(yy::location{}, filename);
+  values[4] = empty_string_id_;
+  AstNode* default_vname_tuple = new (&arena_) Tuple(yy::location{}, 5, values);
+  AstNode* default_vname = new (&arena_) App(vname_id_, default_vname_tuple);
+  return LoadInMemoryRuleFile(filename, default_vname, content_sym);
 }
 
 bool Verifier::LoadInMemoryRuleFile(const std::string& filename, AstNode* vname,
@@ -796,10 +818,14 @@ bool Verifier::LoadInMemoryRuleFile(const std::string& filename, AstNode* vname,
 
 void Verifier::IgnoreDuplicateFacts() { ignore_dups_ = true; }
 
+void Verifier::IgnoreCodeConflicts() { ignore_code_conflicts_ = true; }
+
 void Verifier::SaveEVarAssignments() {
   saving_assignments_ = true;
   parser_.InspectAllEVars();
 }
+
+void Verifier::Verbose() { verbose_ = true; }
 
 void Verifier::ShowGoals() {
   FileHandlePrettyPrinter printer(stdout);
@@ -931,22 +957,20 @@ void Verifier::DumpErrorGoal(size_t group, size_t index) {
     printer.Print(std::to_string(goal_end.line) + ":" +
                   std::to_string(goal_end.column));
   }
-  bool printed_goal = false;
   printer.Print(" ");
   if (goal_end.filename) {
     auto has_symbol = fake_files_.find(*goal_end.filename);
     if (has_symbol != fake_files_.end()) {
-      printed_goal = PrintInMemoryFileSection(
-          symbol_table_.text(has_symbol->second), goal_begin.line - 1,
-          goal_begin.column - 1, goal_end.line - 1, goal_end.column - 1,
-          &printer);
+      PrintInMemoryFileSection(symbol_table_.text(has_symbol->second),
+                               goal_begin.line - 1, goal_begin.column - 1,
+                               goal_end.line - 1, goal_end.column - 1,
+                               &printer);
     } else if (*goal_end.filename != *kStandardIn &&
                *goal_begin.filename == *goal_end.filename) {
       FILE* f = fopen(goal_end.filename->c_str(), "r");
       if (f != nullptr) {
-        printed_goal =
-            PrintFileSection(f, goal_begin.line - 1, goal_begin.column - 1,
-                             goal_end.line - 1, goal_end.column - 1, &printer);
+        PrintFileSection(f, goal_begin.line - 1, goal_begin.column - 1,
+                         goal_end.line - 1, goal_end.column - 1, &printer);
         fclose(f);
       }
     }
@@ -957,37 +981,48 @@ void Verifier::DumpErrorGoal(size_t group, size_t index) {
 }
 
 bool Verifier::VerifyAllGoals(
-    std::function<bool(Verifier*, const Solver::Inspection&)> inspect) {
+    std::function<bool(Verifier*, const Inspection&, std::string_view)>
+        inspect) {
   if (use_fast_solver_) {
     auto result = RunSouffle(
-        symbol_table_, parser_.groups(), facts_, parser_.inspections(),
-        [&](const Solver::Inspection& i) { return inspect(this, i); });
+        symbol_table_, parser_.groups(), facts_, anchors_,
+        parser_.inspections(),
+        [&](const Inspection& i, std::string_view o) {
+          return inspect(this, i, o);
+        },
+        [&](Symbol s) { return symbol_table_.PrettyText(s); });
     highest_goal_reached_ = result.highest_goal_reached;
     highest_group_reached_ = result.highest_group_reached;
     return result.success;
+  } else {
+    if (!PrepareDatabase()) {
+      return false;
+    }
+    std::function<bool(Verifier*, const Inspection&)> wi =
+        [&](Verifier* v, const Inspection& i) {
+          return inspect(v, i, v->InspectionString(i));
+        };
+    Solver solver(this, facts_, anchors_, wi);
+    bool result = solver.Solve();
+    highest_goal_reached_ = solver.highest_goal_reached();
+    highest_group_reached_ = solver.highest_group_reached();
+    return result;
   }
-  if (!PrepareDatabase()) {
-    return false;
-  }
-  Solver solver(this, facts_, anchors_, inspect);
-  bool result = solver.Solve();
-  highest_goal_reached_ = solver.highest_goal_reached();
-  highest_group_reached_ = solver.highest_group_reached();
-  return result;
 }
 
 bool Verifier::VerifyAllGoals() {
-  return VerifyAllGoals([this](Verifier* context,
-                               const Solver::Inspection& inspection) {
-    if (inspection.kind == Solver::Inspection::Kind::EXPLICIT) {
-      FileHandlePrettyPrinter printer(saving_assignments_ ? stderr : stdout);
-      printer.Print(inspection.label);
-      printer.Print(": ");
-      inspection.evar->Dump(symbol_table_, &printer);
-      printer.Print("\n");
+  return VerifyAllGoals([this](Verifier* context, const Inspection& inspection,
+                               std::string_view str) {
+    if (inspection.kind == Inspection::Kind::EXPLICIT) {
+      absl::FPrintF(saving_assignments_ ? stderr : stdout, "%s: %s\n",
+                    inspection.label, str);
     }
-    if (inspection.evar->current()) {
-      saved_assignments_[inspection.label] = inspection.evar->current();
+    if (!str.empty()) {
+      saved_assignments_[inspection.label] = str;
+    } else if (inspection.evar->current() != nullptr) {
+      StringPrettyPrinter printer;
+      inspection.evar->current()->Dump(symbol_table_, &printer);
+      saved_assignments_[inspection.label] = printer.str();
     }
     return true;
   });
@@ -1104,12 +1139,40 @@ static bool EncodedFactHasValidForm(Verifier* cxt, AstNode* a) {
 }
 
 Verifier::InternedVName Verifier::InternVName(AstNode* node) {
-  auto* tuple = node->AsTuple();
+  auto* tuple = node->AsApp()->rhs()->AsTuple();
   return {tuple->element(0)->AsIdentifier()->symbol(),
           tuple->element(1)->AsIdentifier()->symbol(),
           tuple->element(2)->AsIdentifier()->symbol(),
           tuple->element(3)->AsIdentifier()->symbol(),
           tuple->element(4)->AsIdentifier()->symbol()};
+}
+
+AstNode* Verifier::FixFileVName(AstNode* node) {
+  if (auto* app = node->AsApp()) {
+    if (auto* tuple = app->rhs()->AsTuple(); tuple->size() == 5) {
+      if (auto* corpus_id = tuple->element(1)->AsIdentifier()) {
+        if (corpus_id->symbol() == empty_string_sym_) {
+          if (verbose_) {
+            if (auto* path_id = tuple->element(3)->AsIdentifier()) {
+              fprintf(stderr,
+                      "Warning: file '%s' is missing a corpus in its VName.\n",
+                      symbol_table_.text(path_id->symbol()).c_str());
+            }
+          }
+          AstNode** values = (AstNode**)arena_.New(sizeof(AstNode*) * 5);
+          values[0] = tuple->element(0);
+          values[1] = default_file_corpus_;
+          values[2] = tuple->element(2);
+          values[3] = tuple->element(3);
+          values[4] = tuple->element(4);
+          AstNode* new_tuple =
+              new (&arena_) Tuple(builtin_location_, 5, values);
+          return new (&arena_) App(vname_id_, new_tuple);
+        }
+      }
+    }
+  }
+  return node;
 }
 
 bool Verifier::ProcessFactTupleForFastSolver(Tuple* tuple) {
@@ -1122,10 +1185,11 @@ bool Verifier::ProcessFactTupleForFastSolver(Tuple* tuple) {
         auto sym = fast_solver_files_.insert({vname, known_file_sym_});
         if (!sym.second && sym.first->second != known_not_file_sym_) {
           if (assertions_from_file_nodes_) {
-            return LoadInMemoryRuleFile("", tuple->element(0),
+            return LoadInMemoryRuleFile("", FixFileVName(tuple->element(0)),
                                         sym.first->second);
           } else {
-            content_to_vname_[sym.first->second] = tuple->element(0);
+            content_to_vname_[sym.first->second] =
+                FixFileVName(tuple->element(0));
           }
         }
       } else {
@@ -1137,9 +1201,10 @@ bool Verifier::ProcessFactTupleForFastSolver(Tuple* tuple) {
       auto file = fast_solver_files_.insert({vname, content});
       if (!file.second && file.first->second == known_file_sym_) {
         if (assertions_from_file_nodes_) {
-          return LoadInMemoryRuleFile("", tuple->element(0), content);
+          return LoadInMemoryRuleFile("", FixFileVName(tuple->element(0)),
+                                      content);
         } else {
-          content_to_vname_[content] = tuple->element(0);
+          content_to_vname_[content] = FixFileVName(tuple->element(0));
         }
       }
     }
@@ -1151,8 +1216,10 @@ bool Verifier::PrepareDatabase() {
   if (database_prepared_) {
     return true;
   }
-  CHECK(!use_fast_solver_)
-      << "This configuration is not supported when --use_fast_solver is on.";
+  if (use_fast_solver_) {
+    LOG(WARNING) << "PrepareDatabase() called when fast solver was enabled";
+    return true;
+  }
   // TODO(zarko): Make this configurable.
   FileHandlePrettyPrinter printer(stderr);
   // First, sort the tuples. As an invariant, we know they will be of the form
@@ -1194,13 +1261,13 @@ bool Verifier::PrepareDatabase() {
         if (EncodedVNameOrIdentEqualTo(last_file_vname, tb->element(0))) {
           if (assertions_from_file_nodes_) {
             if (!LoadInMemoryRuleFile(
-                    "", tb->element(0),
+                    "", FixFileVName(tb->element(0)),
                     tb->element(4)->AsIdentifier()->symbol())) {
               is_ok = false;
             }
           } else {
             content_to_vname_[tb->element(4)->AsIdentifier()->symbol()] =
-                tb->element(0);
+                FixFileVName(tb->element(0));
           }
         }
         last_file_vname = nullptr;
@@ -1265,38 +1332,42 @@ bool Verifier::PrepareDatabase() {
         tb->element(2) == empty_string_id_ &&
         EncodedIdentEqualTo(ta->element(3), tb->element(3)) &&
         !EncodedIdentEqualTo(ta->element(4), tb->element(4))) {
-      if (EncodedIdentEqualTo(ta->element(3), code_id_)) {
-        // TODO(#1553): (closed?) Add documentation for these new edges.
-        printer.Print(
-            "Two /kythe/code facts about a node differed in value:\n  ");
-        ta->element(0)->Dump(symbol_table_, &printer);
-        printer.Print("\n  ");
-        printer.Print("\nThe decoded values were:\n");
-        auto print_decoded = [&](AstNode* value) {
-          if (auto* ident = value->AsIdentifier()) {
-            proto::common::MarkedSource marked_source;
-            if (!marked_source.ParseFromString(
-                    symbol_table_.text(ident->symbol()))) {
-              printer.Print("(failed to decode)\n");
+      if (EncodedIdentEqualTo(ta->element(3), code_id_) ||
+          EncodedIdentEqualTo(ta->element(3), code_json_id_)) {
+        if (!ignore_code_conflicts_) {
+          // TODO(#1553): (closed?) Add documentation for these new edges.
+          printer.Print(
+              "Two /kythe/code facts about a node differed in value:\n  ");
+          ta->element(0)->Dump(symbol_table_, &printer);
+          printer.Print("\n  ");
+          printer.Print("\nThe decoded values were:\n");
+          auto print_decoded = [&](AstNode* value) {
+            if (auto* ident = value->AsIdentifier()) {
+              proto::common::MarkedSource marked_source;
+              if (!marked_source.ParseFromString(
+                      symbol_table_.text(ident->symbol()))) {
+                printer.Print("(failed to decode)\n");
+              } else {
+                printer.Print(absl::StrCat(marked_source));
+                printer.Print("\n");
+              }
             } else {
-              printer.Print(marked_source.DebugString());
-              printer.Print("\n");
+              printer.Print("(not an identifier)\n");
             }
-          } else {
-            printer.Print("(not an identifier)\n");
-          }
-        };
-        print_decoded(ta->element(4));
-        printer.Print("\n -----------------  versus  ----------------- \n\n");
-        print_decoded(tb->element(4));
+          };
+          print_decoded(ta->element(4));
+          printer.Print("\n -----------------  versus  ----------------- \n\n");
+          print_decoded(tb->element(4));
+          is_ok = false;
+        }
       } else {
         printer.Print("Two facts about a node differed in value:\n  ");
         fa->Dump(symbol_table_, &printer);
         printer.Print("\n  ");
         fb->Dump(symbol_table_, &printer);
         printer.Print("\n");
+        is_ok = false;
       }
-      is_ok = false;
     }
   }
   if (is_ok) {
@@ -1304,6 +1375,16 @@ bool Verifier::PrepareDatabase() {
   }
   database_prepared_ = is_ok;
   return is_ok;
+}
+
+std::string Verifier::InspectionString(const Inspection& i) {
+  StringPrettyPrinter printer;
+  if (i.evar == nullptr) {
+    printer.Print("nil");
+  } else {
+    i.evar->Dump(symbol_table_, &printer);
+  }
+  return printer.str();
 }
 
 AstNode* Verifier::ConvertVName(const yy::location& loc,
@@ -1331,10 +1412,21 @@ AstNode* Verifier::NewUniqueVName(const yy::location& loc) {
 }
 
 AstNode* Verifier::ConvertCodeFact(const yy::location& loc,
-                                   const google::protobuf::string& code_data) {
+                                   const std::string& code_data) {
   proto::common::MarkedSource marked_source;
   if (!marked_source.ParseFromString(code_data)) {
-    std::cerr << loc << ": can't parse code protobuf" << std::endl;
+    LOG(ERROR) << loc << ": can't parse code protobuf" << std::endl;
+    return nullptr;
+  }
+  return ConvertMarkedSource(loc, marked_source);
+}
+
+AstNode* Verifier::ConvertCodeJsonFact(const yy::location& loc,
+                                       const std::string& code_data) {
+  proto::common::MarkedSource marked_source;
+  if (!google::protobuf::util::JsonStringToMessage(code_data, &marked_source)
+           .ok()) {
+    LOG(ERROR) << loc << ": can't parse code/json protobuf" << std::endl;
     return nullptr;
   }
   return ConvertMarkedSource(loc, marked_source);
@@ -1393,6 +1485,9 @@ AstNode* Verifier::ConvertMarkedSource(
     case proto::common::MarkedSource::INITIALIZER:
       emit_fact(marked_source_kind_id_, marked_source_initializer_id_);
       break;
+    case proto::common::MarkedSource::MODIFIER:
+      emit_fact(marked_source_kind_id_, marked_source_modifier_id_);
+      break;
     case proto::common::MarkedSource::PARAMETER_LOOKUP_BY_PARAM:
       emit_fact(marked_source_kind_id_,
                 marked_source_parameter_lookup_by_param_id_);
@@ -1443,6 +1538,7 @@ bool Verifier::AssertSingleFact(std::string* database, unsigned int fact_id,
   loc.begin.line = fact_id;
   loc.end = loc.begin;
   Symbol code_symbol = code_id_->AsIdentifier()->symbol();
+  Symbol code_json_symbol = code_json_id_->AsIdentifier()->symbol();
   AstNode** values = (AstNode**)arena_.New(sizeof(AstNode*) * 5);
   values[0] =
       entry.has_source() ? ConvertVName(loc, entry.source()) : empty_string_id_;
@@ -1468,6 +1564,18 @@ bool Verifier::AssertSingleFact(std::string* database, unsigned int fact_id,
       // Code facts are turned into subgraphs, so this fact entry will turn
       // into an edge entry.
       if ((values[2] = ConvertCodeFact(loc, entry.fact_value())) == nullptr) {
+        return false;
+      }
+      values[1] = marked_source_code_edge_id_;
+      values[3] = root_id_;
+      values[4] = empty_string_id_;
+      is_code = true;
+    } else if (values[3]->AsIdentifier()->symbol() == code_json_symbol &&
+               convert_marked_source_) {
+      // Code facts are turned into subgraphs, so this fact entry will turn
+      // into an edge entry.
+      if ((values[2] = ConvertCodeJsonFact(loc, entry.fact_value())) ==
+          nullptr) {
         return false;
       }
       values[1] = marked_source_code_edge_id_;
@@ -1553,16 +1661,13 @@ void Verifier::DumpAsDot() {
     return;
   }
   std::map<std::string, std::string> vname_labels;
-  for (const auto& [label, vname] : saved_assignments_) {
-    if (!vname) {
+  for (const auto& [label, str] : saved_assignments_) {
+    if (str.empty()) {
       continue;
     }
-    StringPrettyPrinter printer;
-    QuoteEscapingPrettyPrinter quote_printer(printer);
-    vname->Dump(symbol_table_, &printer);
-    auto old_label = vname_labels.find(printer.str());
+    auto old_label = vname_labels.find(str);
     if (old_label == vname_labels.end()) {
-      vname_labels[printer.str()] = label;
+      vname_labels[str] = label;
     } else {
       old_label->second += ", " + label;
     }
@@ -1572,7 +1677,6 @@ void Verifier::DumpAsDot() {
       return std::string();
     }
     StringPrettyPrinter id_string;
-    QuoteEscapingPrettyPrinter id_quote(id_string);
     node->Dump(symbol_table_, &id_string);
     const auto& label = vname_labels.find(id_string.str());
     if (label != vname_labels.end()) {

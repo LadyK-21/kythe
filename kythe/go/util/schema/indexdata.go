@@ -22,9 +22,19 @@ package schema
 import scpb "kythe.io/kythe/proto/schema_go_proto"
 
 var (
+	langs = map[string]scpb.Language{
+		"c++":        1,
+		"dart":       2,
+		"go":         3,
+		"haskell":    4,
+		"java":       5,
+		"kotlin":     6,
+		"protobuf":   7,
+		"textproto":  8,
+		"typescript": 9,
+		"verilog":    10,
+	}
 	nodeKinds = map[string]scpb.NodeKind{
-		"abs":          1,
-		"absvar":       2,
 		"anchor":       3,
 		"constant":     4,
 		"diagnostic":   5,
@@ -104,10 +114,10 @@ var (
 		"/kythe/edge/childof":                  6,
 		"/kythe/edge/childof/context":          7,
 		"/kythe/edge/completedby":              49,
-		"/kythe/edge/completes":                8,
-		"/kythe/edge/completes/uniquely":       9,
 		"/kythe/edge/defines":                  10,
 		"/kythe/edge/defines/binding":          11,
+		"/kythe/edge/defines/implicit":         50,
+		"/kythe/edge/denotes":                  51,
 		"/kythe/edge/depends":                  12,
 		"/kythe/edge/documents":                13,
 		"/kythe/edge/exports":                  14,
@@ -147,9 +157,20 @@ var (
 		"/kythe/edge/undefines":                43,
 	}
 
+	langsRev = map[scpb.Language]string{
+		1:  "c++",
+		2:  "dart",
+		3:  "go",
+		4:  "haskell",
+		5:  "java",
+		6:  "kotlin",
+		7:  "protobuf",
+		8:  "textproto",
+		9:  "typescript",
+		10: "verilog",
+	}
+
 	nodeKindsRev = map[scpb.NodeKind]string{
-		1:  "abs",
-		2:  "absvar",
 		3:  "anchor",
 		4:  "constant",
 		5:  "diagnostic",
@@ -228,8 +249,6 @@ var (
 		5:  "/kythe/edge/bounded/upper",
 		6:  "/kythe/edge/childof",
 		7:  "/kythe/edge/childof/context",
-		8:  "/kythe/edge/completes",
-		9:  "/kythe/edge/completes/uniquely",
 		10: "/kythe/edge/defines",
 		11: "/kythe/edge/defines/binding",
 		12: "/kythe/edge/depends",
@@ -270,8 +289,13 @@ var (
 		47: "/kythe/edge/ref/writes",
 		48: "/kythe/edge/tparam",
 		49: "/kythe/edge/completedby",
+		50: "/kythe/edge/defines/implicit",
+		51: "/kythe/edge/denotes",
 	}
 )
+
+// Language returns the schema enum for the given language.
+func Language(k string) scpb.Language { return langs[k] }
 
 // NodeKind returns the schema enum for the given node kind.
 func NodeKind(k string) scpb.NodeKind { return nodeKinds[k] }
@@ -284,6 +308,9 @@ func FactName(f string) scpb.FactName { return factNames[f] }
 
 // Subkind returns the schema enum for the given subkind.
 func Subkind(k string) scpb.Subkind { return subkinds[k] }
+
+// LanguageString returns the string representation of the given language.
+func LanguageString(k scpb.Language) string { return langsRev[k] }
 
 // NodeKindString returns the string representation of the given node kind.
 func NodeKindString(k scpb.NodeKind) string { return nodeKindsRev[k] }

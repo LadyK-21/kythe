@@ -1,7 +1,7 @@
 load("@rules_java//java:defs.bzl", "java_library")
-load("//tools/build_rules/verifier_test:java_verifier_test.bzl", "java_verifier_test")
-load("//kythe/java/com/google/devtools/kythe/extractors/java/bazel:aspect.bzl", "extract_java")
 load("//kythe/go/test/tools/empty_corpus_checker:empty_corpus_test.bzl", "empty_corpus_test")
+load("//kythe/java/com/google/devtools/kythe/extractors/java/bazel:aspect.bzl", "extract_java")
+load("//tools/build_rules/verifier_test:java_verifier_test.bzl", "java_verifier_test")
 
 java_library(
     name = "pkg",
@@ -67,6 +67,16 @@ java_verifier_test(
     name = "callgraph_tests",
     size = "small",
     srcs = ["Callgraph.java"],
+)
+
+java_verifier_test(
+    name = "callgraph_ident_tests",
+    size = "small",
+    srcs = ["CallgraphIdent.java"],
+    indexer_opts = [
+        "--verbose",
+        "--emit_ref_call_over_identifier",
+    ],
 )
 
 java_verifier_test(
@@ -224,15 +234,7 @@ java_verifier_test(
     srcs = ["Generics.java"],
     indexer_opts = [
         "--verbose",
-        "--generics_structure=tparam",
     ],
-    visibility = ["//kythe/go/serving/tools/testdata:__pkg__"],
-)
-
-java_verifier_test(
-    name = "generics_abs_tests",
-    size = "small",
-    srcs = ["GenericsAbs.java"],
     visibility = ["//kythe/go/serving/tools/testdata:__pkg__"],
 )
 
@@ -240,6 +242,17 @@ java_verifier_test(
     name = "marked_source_tests",
     size = "small",
     srcs = ["MarkedSource.java"],
+    verifier_opts = [
+        "--ignore_dups",
+        "--convert_marked_source",
+    ],
+)
+
+java_verifier_test(
+    name = "rendered_code_tests",
+    size = "small",
+    srcs = ["RenderedCode.java"],
+    resolve_code_facts = True,
     verifier_opts = [
         "--ignore_dups",
         "--convert_marked_source",
@@ -387,6 +400,15 @@ java_verifier_test(
 )
 
 java_verifier_test(
+    name = "native_methods_tests",
+    size = "small",
+    srcs = ["NativeMethods.java"],
+    indexer_opts = [
+        "--emit_native_method_names",
+    ],
+)
+
+java_verifier_test(
     name = "package_tests",
     size = "small",
     srcs = [
@@ -404,7 +426,7 @@ java_verifier_test(
     verifier_opts = [
         "--ignore_dups",
         "--convert_marked_source",
-        "--nofile_vnames",
+        "--allow_missing_file_vnames",
     ],
     visibility = ["//kythe/javatests/com/google/devtools/kythe/analyzers/jvm/testdata:__pkg__"],
 )
@@ -413,7 +435,10 @@ java_verifier_test(
     name = "jvm_reference_tests",
     timeout = "long",
     srcs = ["JvmCrossFile.java"],
-    verifier_deps = [":files_tests"],
+    verifier_deps = [
+        ":files_tests",
+        ":jvm_tests",
+    ],
 )
 
 java_verifier_test(
@@ -544,6 +569,16 @@ java_verifier_test(
         "--verbose",
         "--use_compilation_corpus_as_default",
     ],
+)
+
+java_library(
+    name = "writes",
+    srcs = ["Writes.java"],
+)
+
+java_verifier_test(
+    name = "writes_test",
+    compilation = ":writes",
 )
 
 empty_corpus_test(

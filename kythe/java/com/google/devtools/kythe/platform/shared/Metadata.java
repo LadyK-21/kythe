@@ -21,6 +21,7 @@ import com.google.common.collect.ListMultimap;
 import com.google.common.collect.MultimapBuilder;
 import com.google.devtools.kythe.analyzers.base.EdgeKind;
 import com.google.devtools.kythe.proto.Storage.VName;
+import com.google.protobuf.DescriptorProtos.GeneratedCodeInfo.Annotation.Semantic;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -40,12 +41,16 @@ public class Metadata {
   public static class Rule {
     /** The starting byte offset in the source file. */
     public int begin;
+
     /** The ending byte offset in the source file. */
     public int end;
+
     /** The VName to emit if the rule matches. */
     public VName vname;
+
     /** The edge kind to emit if the rule matches. */
     public EdgeKind edgeOut;
+
     /**
      * If false, draw the edge to the VName; if true, draw it from the VName. For example, if we
      * emit an {@code Anchor defines/binding Node} edge, our range matches the anchor's, and
@@ -53,6 +58,8 @@ public class Metadata {
      * we will emit {@code Node edgeOut vname}.
      */
     public boolean reverseEdge;
+
+    public Semantic semantic;
   }
 
   /** Applies a new {@link Rule} to the file to which this metadata pertains. */

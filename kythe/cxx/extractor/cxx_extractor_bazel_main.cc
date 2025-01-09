@@ -19,18 +19,22 @@
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
+#include <algorithm>
+#include <climits>
+#include <cstdio>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
+#include "absl/log/check.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_format.h"
 #include "cxx_extractor.h"
-#include "glog/logging.h"
 #include "google/protobuf/io/coded_stream.h"
-#include "google/protobuf/io/zero_copy_stream.h"
 #include "google/protobuf/io/zero_copy_stream_impl.h"
 #include "google/protobuf/stubs/common.h"
 #include "kythe/cxx/common/init.h"
@@ -44,6 +48,10 @@ ABSL_FLAG(kythe::PathCanonicalizer::Policy, canonicalize_vname_paths,
           kythe::PathCanonicalizer::Policy::kCleanOnly,
           "Policy to use when canonicalization VName paths: "
           "clean-only (default), prefer-relative, prefer-real.");
+ABSL_FLAG(std::vector<kythe::PathCanonicalizer::PathEntry>,
+          per_file_canonicalization_policy, {},
+          "Space-separated list of <pattern>@<policy> to use when "
+          "canonicalizing paths");
 
 static void LoadExtraAction(const std::string& path,
                             blaze::ExtraActionInfo* info,
@@ -104,7 +112,8 @@ int main(int argc, char* argv[]) {
   config.SetBuildConfig(absl::GetFlag(FLAGS_build_config));
   config.SetCompilationOutputPath(cpp_info.output_file());
   config.SetPathCanonizalizationPolicy(
-      absl::GetFlag(FLAGS_canonicalize_vname_paths));
+      absl::GetFlag(FLAGS_canonicalize_vname_paths),
+      absl::GetFlag(FLAGS_per_file_canonicalization_policy));
   config.Extract(kythe::supported_language::Language::kCpp);
   google::protobuf::ShutdownProtobufLibrary();
   return 0;

@@ -23,12 +23,17 @@
 //   proto_extractor foo.proto bar.proto
 //   proto_extractor foo.proto -- --proto_path dir/with/my/deps
 
+#include <cstdlib>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "absl/flags/parse.h"
 #include "absl/flags/usage.h"
+#include "absl/log/check.h"
 #include "absl/strings/match.h"
-#include "glog/logging.h"
+#include "absl/strings/string_view.h"
+#include "kythe/cxx/common/index_writer.h"
 #include "kythe/cxx/common/init.h"
 #include "kythe/cxx/common/kzip_writer.h"
 #include "kythe/cxx/extractor/proto/proto_extractor.h"
@@ -44,7 +49,6 @@ IndexWriter OpenKzipWriterOrDie(absl::string_view path) {
   CHECK(writer.ok()) << "Failed to open KzipWriter: " << writer.status();
   return std::move(*writer);
 }
-}  // namespace
 
 int main(int argc, char* argv[]) {
   kythe::InitializeProgram(argv[0]);
@@ -91,6 +95,7 @@ Examples:
   return 0;
 }
 
+}  // namespace
 }  // namespace lang_proto
 }  // namespace kythe
 

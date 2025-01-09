@@ -16,9 +16,7 @@
 
 package com.google.devtools.kythe.extractors.java;
 
-import static com.google.common.base.StandardSystemProperty.JAVA_HOME;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static java.nio.file.LinkOption.NOFOLLOW_LINKS;
 
 import com.google.common.base.Joiner;
 import com.google.common.base.Preconditions;
@@ -28,7 +26,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
-import com.google.common.collect.Multimap;
+import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Streams;
 import com.google.common.flogger.FluentLogger;
 import com.google.common.io.ByteStreams;
@@ -44,6 +42,7 @@ import com.google.devtools.kythe.proto.Buildinfo.BuildDetails;
 import com.google.devtools.kythe.proto.Java.JavaDetails;
 import com.google.devtools.kythe.proto.Storage.VName;
 import com.google.devtools.kythe.util.DeleteRecursively;
+import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.protobuf.Any;
 import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.tree.ExpressionTree;
@@ -87,7 +86,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
-import java.util.regex.Pattern;
 import javax.annotation.processing.Processor;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
@@ -98,6 +96,7 @@ import javax.tools.JavaFileObject.Kind;
 import javax.tools.StandardJavaFileManager;
 import javax.tools.StandardLocation;
 import javax.tools.ToolProvider;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * Extracts all required information (set of source files, class paths, and compiler options) from a
@@ -113,7 +112,6 @@ public class JavaCompilationUnitExtractor {
 
   private static final FluentLogger logger = FluentLogger.forEnclosingClass();
 
-  private static final Pattern JDK_MODULE_PATTERN = Pattern.compile("^/modules/(java|jdk)[.].*");
   private static final String MODULE_INFO_NAME = "module-info";
   private static final String SOURCE_JAR_ROOT = "!SOURCE_JAR!";
 
@@ -124,10 +122,17 @@ public class JavaCompilationUnitExtractor {
   private static final ClassLoader moduleClassLoader = findModuleClassLoader();
 
   private static final String JAR_SCHEME = "jar";
-  private final String jdkJar;
   private final String rootDirectory;
   private final FileVNames fileVNames;
   private String systemDir;
+  private boolean allowServiceProcessors = true;
+
+  /** Set whether to allow service processors to run during extraction. Defaults to {@code true}. */
+  @CanIgnoreReturnValue
+  public JavaCompilationUnitExtractor setAllowServiceProcessors(boolean allowServiceProcessors) {
+    this.allowServiceProcessors = allowServiceProcessors;
+    return this;
+  }
 
   /**
    * ExtractionTask represents a single invocation of the java compiler in order to determine the
@@ -145,9 +150,11 @@ public class JavaCompilationUnitExtractor {
     private final CompilationUnitCollector compilationCollector = new CompilationUnitCollector();
     private final UsageAsInputReportingFileManager fileManager =
         JavaCompilationUnitExtractor.getFileManager(compiler, diagnosticCollector);
+    private final boolean allowServiceProcessors;
 
-    ExtractionTask() throws ExtractionException {
+    ExtractionTask(boolean allowServiceProcessors) throws ExtractionException {
       this.tempDir = new TemporaryDirectory();
+      this.allowServiceProcessors = allowServiceProcessors;
     }
 
     public UsageAsInputReportingFileManager getFileManager() {
@@ -210,7 +217,7 @@ public class JavaCompilationUnitExtractor {
       return compileResolved(
           options,
           fileManager.getJavaFileObjectsFromStrings(sourcePaths),
-          loadProcessors(processingClassLoader(fileManager), processors));
+          loadProcessors(processingClassLoader(fileManager), processors, allowServiceProcessors));
     }
 
     @Override
@@ -225,7 +232,7 @@ public class JavaCompilationUnitExtractor {
   }
 
   /**
-   * Creates an instance of the JavaExtractor to store java compilation information in an .kindex
+   * Creates an instance of the JavaExtractor to store java compilation information in an .kzip
    * file.
    */
   public JavaCompilationUnitExtractor(String corpus) throws ExtractionException {
@@ -233,7 +240,7 @@ public class JavaCompilationUnitExtractor {
   }
 
   /**
-   * Creates an instance of the JavaExtractor to store java compilation information in an .kindex
+   * Creates an instance of the JavaExtractor to store java compilation information in an .kzip
    * file.
    */
   public JavaCompilationUnitExtractor(String corpus, String rootDirectory)
@@ -242,7 +249,7 @@ public class JavaCompilationUnitExtractor {
   }
 
   /**
-   * Creates an instance of the JavaExtractor to store java compilation information in an .kindex
+   * Creates an instance of the JavaExtractor to store java compilation information in an .kzip
    * file.
    */
   public JavaCompilationUnitExtractor(FileVNames fileVNames) throws ExtractionException {
@@ -252,17 +259,6 @@ public class JavaCompilationUnitExtractor {
   public JavaCompilationUnitExtractor(FileVNames fileVNames, String rootDirectory)
       throws ExtractionException {
     this.fileVNames = fileVNames;
-
-    Path javaHome = Paths.get(JAVA_HOME.value()).getParent();
-    try {
-      // Remove trailing dots.  Interesting trivia: in some build systems,
-      // the java.home variable is terminated with "/bin/..".
-      // However, this is not the case for the class files
-      // that we are trying to filter.
-      this.jdkJar = javaHome.toRealPath(NOFOLLOW_LINKS).toString();
-    } catch (IOException e) {
-      throw new ExtractionException("JDK path not found: " + javaHome, e, false);
-    }
 
     try {
       this.rootDirectory = Paths.get(rootDirectory).toRealPath().toString();
@@ -403,7 +399,7 @@ public class JavaCompilationUnitExtractor {
             : runJavaAnalysisToExtractCompilationDetails(sources, searchPaths, processors, options);
 
     List<FileData> fileContents = ExtractorUtils.convertBytesToFileDatas(results.fileContents);
-    List<FileInput> compilationFileInputs =
+    ImmutableList<FileInput> compilationFileInputs =
         ExtractorUtils.toFileInputs(fileVNames, results.relativePaths::get, fileContents).stream()
             .map(
                 input -> {
@@ -454,7 +450,7 @@ public class JavaCompilationUnitExtractor {
       Iterable<? extends CompilationUnitTree> compilationUnits)
       throws ExtractionException {
     // Maps package names to source files that wildcard import them.
-    Multimap<String, String> pkgs = HashMultimap.create();
+    SetMultimap<String, String> pkgs = HashMultimap.create();
 
     // Javac synthesizes an "import java.lang.*" for every compilation unit.
     pkgs.put("java.lang", "*.java");
@@ -606,7 +602,6 @@ public class JavaCompilationUnitExtractor {
       throws ExtractionException {
     URI uri = requiredInput.toUri();
     String entryPath;
-    String jarPath = null;
     boolean isJarPath = false;
 
     {
@@ -621,7 +616,6 @@ public class JavaCompilationUnitExtractor {
       if (conn instanceof JarURLConnection) {
         isJarPath = true;
         JarURLConnection jarConn = ((JarURLConnection) conn);
-        jarPath = jarConn.getJarFileURL().getFile();
         // jar entries don't have a leading '/', and we expect
         // paths like "!CLASS_PATH_JAR!/com/foo/Bar.class"
         entryPath = "/" + jarConn.getEntryName();
@@ -653,7 +647,9 @@ public class JavaCompilationUnitExtractor {
 
     // If the file was part of the JDK we do not store it as the JDK is tied
     // to the analyzer we'll run on this information later on.
-    if ((isJarPath && jarPath.startsWith(jdkJar)) || JDK_MODULE_PATTERN.matcher(path).matches()) {
+    // TODO: This is not entirely true any longer. We can run the extractor on
+    // one JDK but the indexer on a newer version.
+    if (location != null && location.getName().startsWith("SYSTEM_MODULES")) {
       return;
     }
 
@@ -761,7 +757,7 @@ public class JavaCompilationUnitExtractor {
    * Returns the location and binary name of a class file, or {@code null} if the file object is not
    * a class.
    */
-  private static String getBinaryNameForClass(
+  private static @Nullable String getBinaryNameForClass(
       UsageAsInputReportingFileManager fileManager, JavaFileObject fileObject)
       throws ExtractionException {
     if (fileObject.getKind() != Kind.CLASS) {
@@ -849,7 +845,7 @@ public class JavaCompilationUnitExtractor {
     AnalysisResults results = new AnalysisResults();
 
     // Generate class files in a temporary directory
-    try (ExtractionTask task = new ExtractionTask()) {
+    try (ExtractionTask task = new ExtractionTask(allowServiceProcessors)) {
       for (Map.Entry<Location, Iterable<String>> entry : searchPaths.entrySet()) {
         setLocation(task.getFileManager(), entry.getKey(), entry.getValue());
       }
@@ -1062,9 +1058,10 @@ public class JavaCompilationUnitExtractor {
     return sourceBaseNames;
   }
 
-  private static Iterable<Processor> loadProcessors(ClassLoader loader, Iterable<String> names)
+  private static Iterable<Processor> loadProcessors(
+      ClassLoader loader, Iterable<String> names, boolean allowServiceProcessors)
       throws ExtractionException {
-    return Iterables.isEmpty(names)
+    return Iterables.isEmpty(names) && allowServiceProcessors
         // If no --processors were passed, add any processors registered in the META-INF/services
         // configuration.
         ? loadServiceProcessors(loader)
@@ -1072,7 +1069,7 @@ public class JavaCompilationUnitExtractor {
         : loadNamedProcessors(loader, names);
   }
 
-  private static Iterable<Processor> loadNamedProcessors(ClassLoader loader, Iterable<String> names)
+  private static List<Processor> loadNamedProcessors(ClassLoader loader, Iterable<String> names)
       throws ExtractionException {
     List<Processor> procs = new ArrayList<>();
     for (String processor : names) {

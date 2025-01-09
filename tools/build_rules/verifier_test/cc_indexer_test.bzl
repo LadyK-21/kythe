@@ -1,3 +1,5 @@
+"""Rules for testing the c++ indexer"""
+
 #
 # Copyright 2017 The Kythe Authors. All rights reserved.
 #
@@ -19,7 +21,7 @@ load(
     "@bazel_tools//tools/build_defs/cc:action_names.bzl",
     "CPP_COMPILE_ACTION_NAME",
 )
-load("@bazel_tools//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain")
+load("//tools/cpp:toolchain_utils.bzl", "find_cpp_toolchain", "use_cpp_toolchain")
 load("@bazel_skylib//lib:paths.bzl", "paths")
 load("@bazel_skylib//lib:shell.bzl", "shell")
 load(
@@ -33,7 +35,7 @@ load(
     "@io_kythe//kythe/cxx/extractor:toolchain.bzl",
     "CXX_EXTRACTOR_TOOLCHAINS",
     "CxxExtractorToolchainInfo",
-    "find_extractor_toolchain",
+    "find_extractor_toolchains",
 )
 
 UNSUPPORTED_FEATURES = [
@@ -56,11 +58,11 @@ _VERIFIER_FLAGS = {
     "convert_marked_source": False,
     "goal_prefix": "//-",
     "ignore_dups": False,
-}
-
-_INDEXER_LOGGING_ENV = {
-    "GLOG_vmodule": "IndexerASTHooks=2,KytheGraphObserver=2,marked_source=2",
-    "GLOG_logtostderr": "1",
+    "ignore_code_conflicts": False,
+    "use_fast_solver": False,
+    "show_protos": False,
+    "show_goals": False,
+    "show_anchors": False,
 }
 
 _INDEXER_FLAGS = {
@@ -68,16 +70,19 @@ _INDEXER_FLAGS = {
     "experimental_drop_cpp_fwd_decl_docs": False,
     "experimental_drop_instantiation_independent_data": False,
     "experimental_drop_objc_fwd_class_docs": False,
-    "experimental_guess_proto_semantics": False,
-    "experimental_record_dataflow_edges": False,
-    "experimental_use_abs_nodes": True,
     "experimental_usr_byte_size": 0,
+    "emit_anchor_scopes": False,
+    "emit_usr_corpus": False,
     "template_instance_exclude_path_pattern": "",
     "fail_on_unimplemented_builtin": True,
     "ignore_unimplemented": False,
     "index_template_instantiations": True,
     "ibuild_config": "",
     "use_compilation_corpus_as_default": False,
+    "record_call_directness": False,
+    "experimental_analysis_exclude_path_pattern": "",
+    "experimental_record_variable_init_types": False,
+    "experimental_record_c_symbols": False,
 }
 
 def _compiler_options(ctx, extractor_toolchain, copts, cc_info):
@@ -97,7 +102,6 @@ def _compiler_options(ctx, extractor_toolchain, copts, cc_info):
         include_directories = cc_info.compilation_context.includes,
         quote_include_directories = cc_info.compilation_context.quote_includes,
         system_include_directories = cc_info.compilation_context.system_includes,
-        add_legacy_cxx_options = True,
     )
 
     # TODO(schroederc): use memory-efficient Args, when available
@@ -108,6 +112,7 @@ def _compiler_options(ctx, extractor_toolchain, copts, cc_info):
         action_name = CPP_COMPILE_ACTION_NAME,
         variables = variables,
     ))
+
     env = cc_common.get_environment_variables(
         feature_configuration = feature_configuration,
         action_name = CPP_COMPILE_ACTION_NAME,
@@ -187,7 +192,7 @@ def _fix_path_for_generated_file(path):
     else:
         return path
 
-def _generate_files(ctx, files, extension):
+def _generate_files(ctx, files, extensions):
     return [
         ctx.actions.declare_file(
             paths.replace_extension(
@@ -196,6 +201,7 @@ def _generate_files(ctx, files, extension):
             ),
         )
         for f in files
+        for extension in extensions
     ]
 
 def _format_path_and_short_path(f):
@@ -207,11 +213,17 @@ def _get_short_path(f):
 _KytheProtoInfo = provider()
 
 def _cc_kythe_proto_library_aspect_impl(target, ctx):
-    sources = _generate_files(ctx, target[ProtoInfo].direct_sources, ".pb.cc")
-    headers = _generate_files(ctx, target[ProtoInfo].direct_sources, ".pb.h")
+    sources = _generate_files(ctx, target[ProtoInfo].direct_sources, [".pb.cc"])
+    if ctx.attr.enable_proto_static_reflection:
+        headers = _generate_files(ctx, target[ProtoInfo].direct_sources, [".pb.h", ".proto.h", ".proto.static_reflection.h"])
+    else:
+        headers = _generate_files(ctx, target[ProtoInfo].direct_sources, [".pb.h", ".proto.h"])
     args = ctx.actions.args()
     args.add("--plugin=protoc-gen-PLUGIN=" + ctx.executable._plugin.path)
-    args.add("--PLUGIN_out=:" + ctx.bin_dir.path + "/")
+    if ctx.attr.enable_proto_static_reflection:
+        args.add("--PLUGIN_out=proto_h,proto_static_reflection_h:" + ctx.bin_dir.path + "/")
+    else:
+        args.add("--PLUGIN_out=proto_h:" + ctx.bin_dir.path + "/")
     args.add_all(target[ProtoInfo].transitive_sources, map_each = _format_path_and_short_path)
     args.add_all(target[ProtoInfo].direct_sources, map_each = _get_short_path)
     ctx.actions.run(
@@ -253,17 +265,13 @@ _cc_kythe_proto_library_aspect = aspect(
         "_cc_toolchain": attr.label(
             default = Label("@bazel_tools//tools/cpp:current_cc_toolchain"),
         ),
-        # Attribute to make importing easier as the internal API requires this parameter.
-        # Unused externally.
-        "_grep_includes": attr.label(
-            allow_single_file = True,
-            executable = True,
-            cfg = "exec",
-            default = Label("//tools/cpp:grep-includes"),
+        "enable_proto_static_reflection": attr.bool(
+            default = False,
+            doc = "Emit and capture generated code for proto static reflection",
         ),
     },
     fragments = ["cpp"],
-    toolchains = ["@bazel_tools//tools/cpp:toolchain_type"],
+    toolchains = use_cpp_toolchain(),
     implementation = _cc_kythe_proto_library_aspect_impl,
 )
 
@@ -280,16 +288,20 @@ cc_kythe_proto_library = rule(
             providers = [ProtoInfo],
             aspects = [_cc_kythe_proto_library_aspect],
         ),
+        "enable_proto_static_reflection": attr.bool(
+            default = False,
+            doc = "Emit and capture generated code for proto static reflection",
+        ),
     },
     implementation = _cc_kythe_proto_library,
 )
 
-def _cc_extract_kzip_impl(ctx):
-    extractor_toolchain = find_extractor_toolchain(ctx)
+def _cc_write_kzip_impl(ctx):
+    extractor_toolchain, runtimes_deps = find_extractor_toolchains(ctx)
     cpp = extractor_toolchain.cc_toolchain
     cc_info = cc_common.merge_cc_infos(cc_infos = [
         src[CcInfo]
-        for src in ctx.attr.srcs + ctx.attr.deps
+        for src in ctx.attr.srcs + ctx.attr.deps + runtimes_deps
         if CcInfo in src
     ])
     opts, cc_env = _compiler_options(ctx, extractor_toolchain, ctx.attr.opts, cc_info)
@@ -331,7 +343,7 @@ def _cc_extract_kzip_impl(ctx):
         KytheVerifierSources(files = depset(ctx.files.srcs)),
     ]
 
-cc_extract_kzip = rule(
+cc_write_kzip = rule(
     attrs = {
         "srcs": attr.label_list(
             doc = "A list of C++ source files to extract.",
@@ -368,12 +380,7 @@ cc_extract_kzip = rule(
             may be used for dependencies which are required for an eventual
             Kythe index, but should not be extracted here.
             """,
-            allow_files = [
-                ".cc",
-                ".c",
-                ".h",
-                ".meta",  # Cross language metadata files.
-            ],
+            allow_files = True,
             providers = [
                 [CcInfo],
                 [CxxCompilationUnits],
@@ -385,14 +392,14 @@ cc_extract_kzip = rule(
             providers = [CxxExtractorToolchainInfo],
         ),
     },
-    doc = """cc_extract_kzip extracts srcs into CompilationUnits.
+    doc = """cc_write_kzip extracts srcs into CompilationUnits.
 
     Each file in srcs will be extracted into a separate .kzip file, based on the name
     of the source.
     """,
     fragments = ["cpp"],
     toolchains = CXX_EXTRACTOR_TOOLCHAINS,
-    implementation = _cc_extract_kzip_impl,
+    implementation = _cc_write_kzip_impl,
 )
 
 def _extract_bundle_impl(ctx):
@@ -520,6 +527,12 @@ _bazel_extract_kzip = rule(
     implementation = _bazel_extract_kzip_impl,
 )
 
+def _expand_as_rootpath(ctx, option):
+    # Replace $(location X) and $(execpath X) with $(rootpath X).
+    return ctx.expand_location(
+        option.replace("$(location ", "$(rootpath ").replace("$(execpath ", "$(rootpath "),
+    )
+
 def _cc_index_source(ctx, src, test_runners):
     entries = ctx.actions.declare_file(
         ctx.label.name + "/" + src.basename + ".entries",
@@ -542,13 +555,13 @@ def _cc_index_source(ctx, src, test_runners):
     test_runners.append(_make_test_runner(
         ctx,
         src,
-        _INDEXER_LOGGING_ENV,
-        arguments = [ctx.expand_location(o) for o in ctx.attr.opts] + [
+        {},
+        arguments = [_expand_as_rootpath(ctx, o) for o in ctx.attr.opts] + [
             "-i",
             src.short_path,
             "--",
             "-c",
-        ] + [ctx.expand_location(o) for o in ctx.attr.copts],
+        ] + [_expand_as_rootpath(ctx, o) for o in ctx.attr.copts],
     ))
     return entries
 
@@ -561,7 +574,7 @@ def _cc_index_compilation(ctx, compilation, test_runners):
     ctx.actions.run(
         mnemonic = "CcIndexCompilation",
         outputs = [entries],
-        inputs = [compilation],
+        inputs = [compilation] + ctx.files.deps,
         tools = [ctx.executable.indexer],
         executable = ctx.executable.indexer,
         arguments = [ctx.expand_location(o) for o in ctx.attr.opts] + [
@@ -573,8 +586,8 @@ def _cc_index_compilation(ctx, compilation, test_runners):
     test_runners.append(_make_test_runner(
         ctx,
         compilation,
-        _INDEXER_LOGGING_ENV,
-        arguments = [ctx.expand_location(o) for o in ctx.attr.opts] + [
+        {},
+        arguments = [_expand_as_rootpath(ctx, o) for o in ctx.attr.opts] + [
             compilation.short_path,
         ],
     ))
@@ -668,7 +681,6 @@ cc_index = rule(
                 ".m",  # Objective-C is supported by the indexer as well.
                 ".kzip",
             ],
-            providers = [CxxCompilationUnits],
         ),
         "copts": attr.string_list(
             doc = "Options to pass to the compiler while indexing.",
@@ -682,6 +694,7 @@ cc_index = rule(
             allow_files = [
                 ".h",
                 ".meta",  # Cross language metadata files.
+                ".claim",  # Static claim files.
             ],
         ),
         "indexer": attr.label(
@@ -718,7 +731,7 @@ def _indexer_test(
         deps = [],
         tags = [],
         size = "small",
-        restricted_to = ["//buildenv:all"],
+        target_compatible_with = [],
         bundled = False,
         expect_fail_verify = False,
         indexer = None,
@@ -733,7 +746,7 @@ def _indexer_test(
             testonly = True,
             src = srcs[0],
             opts = copts,
-            restricted_to = restricted_to,
+            target_compatible_with = target_compatible_with,
             tags = tags,
         )
 
@@ -755,7 +768,7 @@ def _indexer_test(
         srcs = srcs,
         copts = copts if not bundled else [],
         opts = (["-claim_unknown=false"] if bundled else []) + flags.indexer,
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         tags = tags,
         deps = deps,
         **indexer_args
@@ -767,20 +780,20 @@ def _indexer_test(
         deps = [":" + name + "_entries"],
         expect_success = not expect_fail_verify,
         opts = flags.verifier,
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         tags = tags,
     )
 
-# If a test is expected to pass on darwin but not on linux, you can set
-# restricted_to=["//buildenv:darwin"]. This causes the test to be skipped on linux and it
-# causes the actual test to execute on darwin.
+# If a test is expected to pass on OSX but not on linux, you can set
+# target_compatible_with=["@platforms//os:osx"]. This causes the test to be skipped on linux and it
+# causes the actual test to execute on OSX.
 def cc_indexer_test(
         name,
         srcs,
         deps = [],
         tags = [],
         size = "small",
-        restricted_to = ["//buildenv:all"],
+        target_compatible_with = [],
         std = "c++11",
         bundled = False,
         expect_fail_verify = False,
@@ -807,11 +820,14 @@ def cc_indexer_test(
         an unimplemented construct.
       index_template_instantiations: Whether the indexer should index template
         instantiations.
+      emit_usr_corpus: Whether the indexer should emit corpora for USRs.
       experimental_alias_template_instantiations: Whether the indexer should alias
         template instantiations.
       experimental_drop_instantiation_independent_data: Whether the indexer should
         drop extraneous instantiation independent data.
       experimental_usr_byte_size: How many bytes of a USR to use.
+      ignore_code_conflicts: Ignore conflicting /kythe/code facts during verification.
+      use_fast_solver: Use the fast solver.
     """
     _indexer_test(
         name = name,
@@ -820,7 +836,7 @@ def cc_indexer_test(
         tags = tags,
         size = size,
         copts = ["-std=" + std] + copts,
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         bundled = bundled,
         expect_fail_verify = expect_fail_verify,
         indexer = indexer,
@@ -833,7 +849,7 @@ def objc_indexer_test(
         deps = [],
         tags = [],
         size = "small",
-        restricted_to = ["//buildenv:all"],
+        target_compatible_with = [],
         bundled = False,
         expect_fail_verify = False,
         **kwargs):
@@ -870,13 +886,19 @@ def objc_indexer_test(
         size = size,
         # Newer ObjC features are only enabled on the "modern" runtime.
         copts = ["-fblocks", "-fobjc-runtime=macosx"],
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         bundled = bundled,
         expect_fail_verify = expect_fail_verify,
         **kwargs
     )
 
-def objc_bazel_extractor_test(name, src, data, size = "small", tags = [], restricted_to = ["//buildenv:all"]):
+def objc_bazel_extractor_test(
+        name,
+        src,
+        data,
+        size = "small",
+        tags = [],
+        target_compatible_with = []):
     """Objective C Bazel extractor test.
 
     Args:
@@ -889,7 +911,7 @@ def objc_bazel_extractor_test(name, src, data, size = "small", tags = [], restri
         srcs = [src],
         data = data,
         extractor = "//kythe/cxx/extractor:objc_extractor_bazel",
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         scripts = [
             "//third_party/bazel:get_devdir",
             "//third_party/bazel:get_sdkroot",
@@ -900,7 +922,7 @@ def objc_bazel_extractor_test(name, src, data, size = "small", tags = [], restri
         name = name + "_entries",
         testonly = True,
         srcs = [":" + name + "_kzip"],
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         tags = tags,
     )
     return verifier_test(
@@ -909,7 +931,7 @@ def objc_bazel_extractor_test(name, src, data, size = "small", tags = [], restri
         srcs = [src],
         deps = [":" + name + "_entries"],
         opts = ["--ignore_dups"],
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         tags = tags,
     )
 
@@ -950,15 +972,15 @@ def cc_extractor_test(
         size = "small",
         std = "c++11",
         tags = [],
-        restricted_to = ["//buildenv:all"]):
+        target_compatible_with = []):
     """C++ verifier test on an extracted source file."""
     args = ["-std=" + std, "-c"]
-    cc_extract_kzip(
+    cc_write_kzip(
         name = name + "_kzip",
         testonly = True,
         srcs = srcs,
         opts = args,
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         tags = tags,
         deps = data,
     )
@@ -967,7 +989,7 @@ def cc_extractor_test(
         testonly = True,
         srcs = [":" + name + "_kzip"],
         opts = ["--ignore_unimplemented"],
-        restricted_to = restricted_to,
+        target_compatible_with = target_compatible_with,
         tags = tags,
         deps = data,
     )
@@ -975,8 +997,8 @@ def cc_extractor_test(
         name = name,
         size = size,
         srcs = srcs,
-        opts = ["--ignore_dups"],
-        restricted_to = restricted_to,
+        opts = ["--ignore_dups", "--ignore_code_conflicts"],
+        target_compatible_with = target_compatible_with,
         tags = tags,
         deps = deps + [":" + name + "_entries"],
     )

@@ -17,42 +17,40 @@
 #include "kythe/cxx/common/regex.h"
 
 #include <memory>
+#include <utility>
+#include <vector>
 
+#include "absl/base/no_destructor.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
-#include "glog/logging.h"
 #include "re2/re2.h"
 
 namespace kythe {
 namespace {
 
-template <typename T>
-union NoDestructor {
-  T value;
-  ~NoDestructor() {}
-};
-
 std::shared_ptr<const RE2> DefaultRegex() {
-  static const NoDestructor<std::shared_ptr<const RE2>> kEmpty = {
+  static const absl::NoDestructor<std::shared_ptr<const RE2>> kEmpty{
       std::make_shared<RE2>("")};
-  return kEmpty.value;
+  return *kEmpty;
 }
 
 std::shared_ptr<const RE2::Set> DefaultSet() {
-  static const NoDestructor<std::shared_ptr<const RE2::Set>> kEmpty = {[] {
+  static const absl::NoDestructor<std::shared_ptr<const RE2::Set>> kEmpty{[] {
     auto set = std::make_shared<RE2::Set>(RE2::Options(), RE2::UNANCHORED);
     set->Compile();
     return set;
   }()};
-  return kEmpty.value;
+  return *kEmpty;
 }
 
 RE2::Set CheckCompiled(RE2::Set set) {
   RE2::Set::ErrorInfo error;
   if (!set.Match("", nullptr, &error)) {
     if (error.kind == RE2::Set::kNotCompiled) {
-      LOG(DFATAL) << "Uncompiled RE2::Set passed to RegexSet";
+      DLOG(FATAL) << "Uncompiled RE2::Set passed to RegexSet";
       CHECK(set.Compile()) << "Failed to compile RE2::Set";
     }
   }

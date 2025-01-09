@@ -1,7 +1,8 @@
-load("//tools:build_rules/shims.bzl", "go_library", "go_test")
-load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
-load(":testdata/go_indexer_test.bzl", "go_indexer_test")
 load("//kythe/go/test/tools/empty_corpus_checker:empty_corpus_test.bzl", "empty_corpus_test")
+load("//tools:build_rules/shims.bzl", "go_library", "go_test")
+load(":flags.bzl", "flag_constructor", "flag_constructors")
+load(":testdata/go_indexer_test.bzl", "go_indexer_test")
+load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
 
 package(default_visibility = ["//kythe:default_visibility"])
 
@@ -13,9 +14,11 @@ go_library(
         "indexer.go",
         "markedsource.go",
     ],
+    importpath = "kythe.io/kythe/go/indexer",
     deps = [
         "//kythe/go/extractors/govname",
         "//kythe/go/util/kytheuri",
+        "//kythe/go/util/log",
         "//kythe/go/util/metadata",
         "//kythe/go/util/ptypes",
         "//kythe/go/util/schema/edges",
@@ -27,9 +30,9 @@ go_library(
         "//kythe/proto:metadata_go_proto",
         "//kythe/proto:storage_go_proto",
         "@com_github_golang_protobuf//proto:go_default_library",
-        "@org_bitbucket_creachadair_stringset//:go_default_library",
-        "@org_golang_x_tools//go/gcexportdata:go_default_library",
-        "@org_golang_x_tools//go/types/typeutil:go_default_library",
+        "@org_bitbucket_creachadair_stringset//:stringset",
+        "@org_golang_x_tools//go/gcexportdata",
+        "@org_golang_x_tools//go/types/typeutil",
     ],
 )
 
@@ -42,6 +45,14 @@ go_test(
     library = ":indexer",
     deps = [
         "//kythe/go/test/testutil",
+        "//kythe/go/util/log",
+        "//kythe/go/util/metadata",
+        "//kythe/go/util/ptypes",
+        "//kythe/go/util/schema/edges",
+        "//kythe/proto:analysis_go_proto",
+        "//kythe/proto:go_go_proto",
+        "//kythe/proto:metadata_go_proto",
+        "//kythe/proto:storage_go_proto",
         "@com_github_golang_protobuf//proto:go_default_library",
     ],
 )
@@ -50,6 +61,16 @@ bzl_library(
     name = "go_indexer_test_bzl",
     srcs = ["testdata/go_indexer_test.bzl"],
     visibility = ["//visibility:private"],
+)
+
+go_indexer_test(
+    name = "builtin_test",
+    srcs = ["testdata/builtin.go"],
+    extra_goals = ["testdata/builtin.go"],
+    has_marked_source = True,
+    import_path = "builtin",
+    resolve_code_facts = True,
+    use_file_as_top_level_scope = True,
 )
 
 go_indexer_test(
@@ -111,6 +132,13 @@ go_indexer_test(
 )
 
 go_indexer_test(
+    name = "funcallid_test",
+    srcs = ["testdata/basic/funcallid.go"],
+    extra_indexer_args = ["-emit_ref_call_over_identifier"],
+    import_path = "test/fun",
+)
+
+go_indexer_test(
     name = "functions_test",
     srcs = ["testdata/basic/functions.go"],
     import_path = "test/fun",
@@ -138,6 +166,11 @@ go_indexer_test(
 )
 
 go_indexer_test(
+    name = "writes_test",
+    srcs = ["testdata/basic/writes.go"],
+)
+
+go_indexer_test(
     name = "imports_test",
     srcs = ["testdata/basic/imports.go"],
 )
@@ -149,8 +182,20 @@ go_indexer_test(
 )
 
 go_indexer_test(
+    name = "scopes_test_fs",
+    srcs = ["testdata/basic/scopes.go"],
+    emit_anchor_scopes = True,
+    use_fast_solver = True,
+)
+
+go_indexer_test(
     name = "comment_test",
     srcs = ["testdata/basic/comments.go"],
+)
+
+go_indexer_test(
+    name = "doc_test",
+    srcs = ["testdata/basic/docs.go"],
 )
 
 go_indexer_test(
@@ -172,6 +217,15 @@ go_indexer_test(
     name = "inline_test",
     srcs = ["testdata/basic/inline.go"],
     metadata_suffix = ".linkage",
+)
+
+go_indexer_test(
+    name = "code_rendered_test",
+    srcs = ["testdata/code/rendered.go"],
+    has_marked_source = True,
+    import_path = "rendered",
+    resolve_code_facts = True,
+    deps = [":builtin_test"],
 )
 
 go_indexer_test(
@@ -254,22 +308,44 @@ go_indexer_test(
 )
 
 go_indexer_test(
+    name = "packageinit_file_test",
+    srcs = ["testdata/basic/packageinit_file.go"],
+    import_path = "test/pkginit",
+    use_file_as_top_level_scope = True,
+)
+
+go_indexer_test(
     name = "types_test",
     srcs = ["testdata/types.go"],
     has_marked_source = True,
 )
 
 go_indexer_test(
+    name = "types_test_fs",
+    srcs = ["testdata/types.go"],
+    has_marked_source = True,
+    use_fast_solver = True,
+)
+
+go_indexer_test(
+    name = "dep.v2",
+    srcs = ["testdata/dep.v2.go"],
+)
+
+go_indexer_test(
     name = "dependent_test",
     srcs = ["testdata/dependent.go"],
     has_marked_source = True,
-    deps = [":types_test"],
+    deps = [
+        ":dep.v2",
+        ":types_test",
+    ],
 )
 
 go_indexer_test(
     name = "tappcorpus_test",
     srcs = ["testdata/basic/tappcorpus.go"],
-    use_compilation_corpus_as_default = True,
+    use_compilation_corpus_for_all = True,
 )
 
 empty_corpus_test(
@@ -284,7 +360,7 @@ go_indexer_test(
         "--use_default_corpus_for_stdlib",
         "--corpus=kythe",
     ],
-    use_compilation_corpus_as_default = True,
+    use_compilation_corpus_for_all = True,
 )
 
 # Test that extracting and indexing a go package that imports standard libraries
@@ -294,6 +370,94 @@ empty_corpus_test(
     name = "stdlibimport_corpus_test",
     allowed_corpora = ["kythe"],
     entries = ":stdlibimport_test_entries.entries.gz",
+)
+
+go_indexer_test(
+    name = "stdliboverride_test",
+    srcs = ["testdata/basic/stdliboverride.go"],
+    extra_extractor_args = [
+        "--corpus=kythe",
+    ],
+    override_stdlib_corpus = "STDLIB_OVERRIDE",
+    use_compilation_corpus_for_all = True,
+)
+
+standard_flags = {
+    # Standard func(name, default, desc) flags in the "flag" package.
+    "flag": [
+        "Bool",
+        "Duration",
+        "Float64",
+        "Int",
+        "Int64",
+        "String",
+        "Uint",
+        "Uint64",
+    ],
+}
+
+standard_var_flags = {
+    # Standard func(var, name, default, desc) flags in the "flag" package.
+    "flag": [
+        "BoolVar",
+        "DurationVar",
+        "Float64Var",
+        "Int64Var",
+        "IntVar",
+        "StringVar",
+        "TextVar",
+        "Uint64Var",
+        "UintVar",
+    ],
+}
+
+custom_flags = [
+    # Func flag constructors in the "flag" package.
+    flag_constructor(
+        description_arg_position = 1,
+        func_name = "Func",
+        name_arg_position = 0,
+        pkg_path = "flag",
+    ),
+    flag_constructor(
+        description_arg_position = 1,
+        func_name = "BoolFunc",
+        name_arg_position = 0,
+        pkg_path = "flag",
+    ),
+    # Var flag constructor w/o a default in the "flag" package.
+    flag_constructor(
+        description_arg_position = 2,
+        func_name = "Var",
+        name_arg_position = 1,
+        pkg_path = "flag",
+        var_arg_position = 0,
+    ),
+]
+
+flag_constructors(
+    name = "standard_flags",
+    custom_flags = custom_flags,
+    standard_flags = standard_flags,
+    standard_var_flags = standard_var_flags,
+)
+
+flag_constructors(
+    name = "test_flags",
+    custom_flags = custom_flags,
+    standard_flags = standard_flags | {
+        "flags": ["CustomFlag"],
+    },
+    standard_var_flags = standard_var_flags,
+)
+
+go_indexer_test(
+    name = "flags_test",
+    srcs = ["testdata/flags.go"],
+    data = [":test_flags"],
+    extra_indexer_args = [
+        "-flag_constructors=$(location :test_flags)",
+    ],
 )
 
 # load(":testdata/go_indexer_test.bzl", "go_integration_test")

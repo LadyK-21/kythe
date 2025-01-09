@@ -17,7 +17,7 @@
 # Download, build, and extract a set of Go packages.  Resulting compilations
 # will be merged into a single .kzip archive in the "$OUTPUT" directory.
 
-: "${TMPDIR:=/tmp}" "${OUTPUT:=/output}" "${KYTHE_KZIP_ENCODING:=JSON}"
+: "${TMPDIR:=/tmp}" "${OUTPUT:=/output}"
 
 if [[ -z "${GOPATH}" ]]; then
   echo "GOPATH environment variable is required" >&2
@@ -92,7 +92,7 @@ fi
 # cd into the top-level git directory of our package and query git for the
 # commit timestamp.
 pushd "$(go env GOPATH)/src/${PACKAGE}"
-TIMESTAMP="$(git log --pretty='%ad' -n 1 HEAD)"
+TIMESTAMP="$(git -c safe.directory='*' log --pretty='%ad' -n 1 HEAD)"
 popd
 
 # Record the timestamp of the git commit in a metadata kzip.
@@ -102,5 +102,5 @@ kzip create_metadata \
   --commit_timestamp "$TIMESTAMP"
 
 echo "Merging compilations into $OUT" >&2
-kzip merge --encoding "$KYTHE_KZIP_ENCODING" --output "$OUT" "$TMPDIR/out.kzip" "$OUTPUT/buildmetadata.kzip"
+kzip merge --output "$OUT" "$TMPDIR/out.kzip" "$OUTPUT/buildmetadata.kzip"
 fix_permissions.sh "$OUTPUT"

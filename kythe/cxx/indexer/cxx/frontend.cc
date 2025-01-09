@@ -21,9 +21,11 @@
 #include <unistd.h>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 
 #include "absl/flags/flag.h"
+#include "absl/log/check.h"
 #include "absl/memory/memory.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
@@ -35,7 +37,6 @@
 #include "kythe/cxx/common/kzip_reader.h"
 #include "kythe/cxx/common/path_utils.h"
 #include "kythe/cxx/indexer/cxx/DynamicClaimClient.h"
-#include "kythe/cxx/indexer/cxx/proto_conversions.h"
 #include "kythe/proto/buildinfo.pb.h"
 #include "kythe/proto/claim.pb.h"
 #include "llvm/ADT/STLExtras.h"
@@ -85,7 +86,7 @@ constexpr char kBuildDetailsURI[] = "kythe.io/proto/kythe.proto.BuildDetails";
 /// \return the input name stripped of its prefix if it's silent; an empty
 /// string otherwise.
 llvm::StringRef strip_silent_input_prefix(llvm::StringRef argument) {
-  if (absl::GetFlag(FLAGS_test_claim) && argument.startswith(kSilentPrefix)) {
+  if (absl::GetFlag(FLAGS_test_claim) && argument.starts_with(kSilentPrefix)) {
     return argument.drop_front(::strlen(kSilentPrefix));
   }
   return {};
@@ -128,40 +129,6 @@ void MaybeNormalizeFileVNames(IndexerJob* job) {
     input.mutable_v_name()->set_path(CleanPath(input.v_name().path()));
     input.mutable_v_name()->clear_signature();
   }
-}
-
-/// \brief Reads data from a .kindex file into memory.
-/// \param path The path from which the file should be read.
-/// \param virtual_files A vector to be filled with FileData.
-/// \param unit A `CompilationUnit` to be decoded from the .kindex.
-void DecodeIndexFile(const std::string& path,
-                     std::vector<proto::FileData>* virtual_files,
-                     proto::CompilationUnit* unit) {
-  using namespace google::protobuf::io;
-  int fd = open(path.c_str(), O_RDONLY, S_IREAD | S_IWRITE);
-  CHECK_GE(fd, 0) << "Couldn't open input file " << path;
-  FileInputStream file_input_stream(fd);
-  GzipInputStream gzip_input_stream(&file_input_stream);
-  google::protobuf::uint32 byte_size;
-  for (;;) {
-    CodedInputStream coded_input_stream(&gzip_input_stream);
-    coded_input_stream.SetTotalBytesLimit(INT_MAX);
-    if (!coded_input_stream.ReadVarint32(&byte_size)) {
-      break;
-    }
-    coded_input_stream.PushLimit(byte_size);
-    if (unit) {
-      CHECK(unit->ParseFromCodedStream(&coded_input_stream));
-      unit = nullptr;
-    } else {
-      proto::FileData content;
-      CHECK(content.ParseFromCodedStream(&coded_input_stream));
-      CHECK(content.has_info());
-      virtual_files->push_back(std::move(content));
-    }
-  }
-  CHECK(!unit) << "Never saw a CompilationUnit.";
-  close(fd);
 }
 
 /// \brief Reads all compilations from a .kzip file into memory.
@@ -212,17 +179,16 @@ stdin and writes binary Kythe artifacts to stdout as a sequence of Entry
 protos. Command-line arguments may be passed to the underlying compiler, if
 one should exist, as positional parameters.
 
-There may be a positional parameter specified that ends in .kzip or .kindex
-(deprecated). If one exists, no other positional parameters may be specified,
-nor may an additional input parameter be specified. Input will be read from the
-index file.
+There may be a positional parameter specified that ends in .kzip. If one exists,
+no other positional parameters may be specified, nor may an additional input
+parameter be specified. Input will be read from the kzip file.
 
-If -test_claim is specified, you may specify that one or more kindex inputs
+If -test_claim is specified, you may specify that one or more kzip inputs
 should not produce any output by prepending the prefix "silent:" to the input's
 name.
 
 Examples:)");
-  message.append(program_name + " some/index.kindex\n");
+  message.append(program_name + " some/index.kzip\n");
   message.append(program_name + " -i foo.cc -o foo.bin -- -DINDEXING\n");
   message.append(program_name + " -i foo.cc | verifier foo.cc");
   return message;
@@ -231,32 +197,24 @@ Examples:)");
 bool IndexerContext::HasIndexArguments() {
   for (const auto& arg : args_) {
     auto path = llvm::StringRef(arg);
-    if (path.endswith(".kindex") || path.endswith(".kzip")) {
+    if (path.ends_with(".kzip")) {
       CHECK_EQ("-", absl::GetFlag(FLAGS_i))
-          << "No other input is allowed when reading from an index file or an "
-          << "index pack.";
+          << "No other input is allowed when reading from a kzip file.";
       return true;
     }
   }
   return false;
 }
 
-void IndexerContext::LoadDataFromIndex(const std::string& file_or_cu,
-                                       const CompilationVisitCallback& visit) {
+void IndexerContext::LoadDataFromKZip(const std::string& file_or_cu,
+                                      const CompilationVisitCallback& visit) {
   std::string name(strip_silent_input_prefix(file_or_cu));
   const bool silent = !name.empty();
   if (name.empty()) {
     name = file_or_cu;
   }
-  if (llvm::StringRef(file_or_cu).endswith(".kzip")) {
-    DecodeKZipFile(name, silent, visit);
-  } else {
-    IndexerJob job;
-    job.silent = silent;
-    DecodeIndexFile(name, &job.virtual_files, &job.unit);
-    MaybeNormalizeFileVNames(&job);
-    visit(job);
-  }
+  CHECK(llvm::StringRef(file_or_cu).ends_with(".kzip"));
+  DecodeKZipFile(name, silent, visit);
 }
 
 void IndexerContext::LoadDataFromUnpackedFile(
@@ -312,7 +270,7 @@ void IndexerContext::LoadDataFromUnpackedFile(
 
 void IndexerContext::InitializeClaimClient() {
   if (!absl::GetFlag(FLAGS_experimental_dynamic_claim_cache).empty()) {
-    auto dynamic_claims = absl::make_unique<kythe::DynamicClaimClient>();
+    auto dynamic_claims = std::make_unique<kythe::DynamicClaimClient>();
     dynamic_claims->set_max_redundant_claims(
         absl::GetFlag(FLAGS_experimental_dynamic_overclaim));
     CHECK(dynamic_claims->OpenMemcache(
@@ -320,7 +278,7 @@ void IndexerContext::InitializeClaimClient() {
         << "Can't open memcached";
     claim_client_ = std::move(dynamic_claims);
   } else {
-    auto static_claims = absl::make_unique<kythe::StaticClaimClient>();
+    auto static_claims = std::make_unique<kythe::StaticClaimClient>();
     if (!absl::GetFlag(FLAGS_static_claim).empty()) {
       DecodeStaticClaimTable(absl::GetFlag(FLAGS_static_claim),
                              static_claims.get());
@@ -343,8 +301,8 @@ void IndexerContext::OpenOutputStreams() {
     }
   }
   raw_output_ =
-      absl::make_unique<google::protobuf::io::FileOutputStream>(write_fd_);
-  kythe_output_ = absl::make_unique<kythe::FileOutputStream>(raw_output_.get());
+      std::make_unique<google::protobuf::io::FileOutputStream>(write_fd_);
+  kythe_output_ = std::make_unique<kythe::FileOutputStream>(raw_output_.get());
   kythe_output_->set_show_stats(absl::GetFlag(FLAGS_cache_stats));
   kythe_output_->set_flush_after_each_entry(
       absl::GetFlag(FLAGS_flush_after_each_entry));
@@ -363,7 +321,7 @@ void IndexerContext::CloseOutputStreams() {
 
 void IndexerContext::OpenHashCache() {
   if (!absl::GetFlag(FLAGS_cache).empty()) {
-    auto memcache_hash_cache = absl::make_unique<MemcachedHashCache>();
+    auto memcache_hash_cache = std::make_unique<MemcachedHashCache>();
     CHECK(memcache_hash_cache->OpenMemcache(absl::GetFlag(FLAGS_cache)));
     memcache_hash_cache->SetSizeLimits(absl::GetFlag(FLAGS_min_size),
                                        absl::GetFlag(FLAGS_max_size));
@@ -393,7 +351,7 @@ void IndexerContext::EnumerateCompilations(
     LoadDataFromUnpackedFile(default_filename_, visit);
   } else {
     for (size_t arg = 1; arg < args_.size(); ++arg) {
-      LoadDataFromIndex(args_[arg], visit);
+      LoadDataFromKZip(args_[arg], visit);
     }
   }
 }

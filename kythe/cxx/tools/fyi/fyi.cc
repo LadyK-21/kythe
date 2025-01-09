@@ -16,7 +16,8 @@
 
 #include "kythe/cxx/tools/fyi/fyi.h"
 
-#include "absl/memory/memory.h"
+#include <memory>
+
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "clang/Frontend/ASTUnit.h"
@@ -30,7 +31,6 @@
 #include "kythe/cxx/common/kythe_uri.h"
 #include "kythe/cxx/common/schema/edges.h"
 #include "kythe/cxx/common/schema/facts.h"
-#include "kythe/cxx/indexer/cxx/proto_conversions.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -280,10 +280,11 @@ class PreprocessorHooks : public clang::PPCallbacks {
                           const clang::Token& include_token,
                           llvm::StringRef file_name, bool is_angled,
                           clang::CharSourceRange file_name_range,
-                          llvm::Optional<clang::FileEntryRef> include_file,
+                          clang::OptionalFileEntryRef include_file,
                           llvm::StringRef search_path,
                           llvm::StringRef relative_path,
                           const clang::Module* imported,
+                          bool is_module_imported,
                           clang::SrcMgr::CharacteristicKind FileType) override;
 
  private:
@@ -321,9 +322,9 @@ class Action : public clang::ASTFrontendAction,
     if (tracker_->state() == FileTracker::State::kBusy) {
       tracker_->BeginPass();
       compiler.getPreprocessor().addPPCallbacks(
-          absl::make_unique<PreprocessorHooks>(this));
+          std::make_unique<PreprocessorHooks>(this));
     }
-    return absl::make_unique<clang::ASTConsumer>();
+    return std::make_unique<clang::ASTConsumer>();
   }
 
   /// \copydoc ASTFrontendAction::ExecuteAction
@@ -471,16 +472,16 @@ void PreprocessorHooks::FileChanged(clang::SourceLocation loc,
     clang::SourceManager* source_manager =
         &enclosing_pass_->getCompilerInstance().getSourceManager();
     clang::FileID loc_id = source_manager->getFileID(loc);
-    if (const clang::FileEntry* file_entry =
-            source_manager->getFileEntryForID(loc_id)) {
+    if (const clang::OptionalFileEntryRef file_entry =
+            source_manager->getFileEntryRefForID(loc_id)) {
       if (file_entry->getName() == enclosing_pass_->tracker()->filename()) {
         enclosing_pass_->tracker()->set_file_begin(loc);
         const auto buffer =
-            source_manager->getMemoryBufferForFileOrNone(file_entry);
+            source_manager->getMemoryBufferForFileOrNone(*file_entry);
         if (buffer) {
           enclosing_pass_->tracker()->SetInitialContent(buffer->getBuffer());
         }
-        tracked_file_ = file_entry;
+        tracked_file_ = &file_entry->getFileEntry();
       }
     }
   }
@@ -490,9 +491,9 @@ void PreprocessorHooks::InclusionDirective(
     clang::SourceLocation hash_location, const clang::Token& include_token,
     llvm::StringRef file_name, bool is_angled,
     clang::CharSourceRange file_name_range,
-    llvm::Optional<clang::FileEntryRef> include_file,
-    llvm::StringRef search_path, llvm::StringRef relative_path,
-    const clang::Module* imported, clang::SrcMgr::CharacteristicKind FileType) {
+    clang::OptionalFileEntryRef include_file, llvm::StringRef search_path,
+    llvm::StringRef relative_path, const clang::Module* imported,
+    bool is_module_imported, clang::SrcMgr::CharacteristicKind FileType) {
   if (!enclosing_pass_ || !enclosing_pass_->tracker()) {
     return;
   }
@@ -588,7 +589,7 @@ bool ActionFactory::runInvocation(
   clang::ASTUnit* ast_unit = nullptr;
   // We only consider one full parse on one input file for now, so we only ever
   // need one Action.
-  auto action = absl::make_unique<Action>(*this);
+  llvm::IntrusiveRefCntPtr<Action> action(new Action(*this));
   do {
     BeginNextIteration();
     if (!ast_unit) {

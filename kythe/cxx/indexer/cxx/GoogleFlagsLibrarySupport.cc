@@ -18,7 +18,9 @@
 
 #include "GoogleFlagsLibrarySupport.h"
 
+#include "GraphObserver.h"
 #include "IndexerASTHooks.h"
+#include "KytheGraphObserver.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/FileManager.h"
 
@@ -57,7 +59,7 @@ static clang::SourceRange GetVarDeclFlagDeclLoc(
     const clang::LangOptions& LO, const clang::VarDecl* Decl,
     clang::SourceLocation RefLoc = clang::SourceLocation()) {
   // Quickly bail out if this isn't "FLAGS_foo":
-  if (!Decl->getName().startswith("FLAGS_")) {
+  if (!Decl->getName().starts_with("FLAGS_")) {
     return clang::SourceLocation();
   }
   clang::SourceLocation Loc = Decl->getLocation();
@@ -91,13 +93,13 @@ static clang::SourceRange GetVarDeclFlagDeclLoc(
     if (MaybeFlagsFileId.isInvalid()) {
       return false;
     }
-    const auto* MaybeFlagsFileEntry = SM.getFileEntryForID(MaybeFlagsFileId);
+    const auto MaybeFlagsFileEntry = SM.getFileEntryRefForID(MaybeFlagsFileId);
     if (!MaybeFlagsFileEntry) {
       return false;
     }
     llvm::StringRef MaybeFlagsFilename(MaybeFlagsFileEntry->getName());
-    return MaybeFlagsFilename.endswith("gflags.h") ||
-           MaybeFlagsFilename.endswith("gflags_declare.h");
+    return MaybeFlagsFilename.ends_with("gflags.h") ||
+           MaybeFlagsFilename.ends_with("gflags_declare.h");
   };
   auto SRBegin = Decl->getSourceRange().getBegin();
   if (!SRBegin.isValid() ||
@@ -129,8 +131,8 @@ static clang::SourceRange GetVarDeclFlagDeclLoc(
   auto DefTokText = llvm::StringRef(FileBuf.substr(
       FileIdOffset.second, FileIdEndOffset.second - FileIdOffset.second));
   bool IsFlagDef =
-      DefTokText.startswith("DEFINE_") || DefTokText.startswith("ABSL_FLAG");
-  if (!IsFlagDef && !DefTokText.startswith("DECLARE_")) {
+      DefTokText.starts_with("DEFINE_") || DefTokText.starts_with("ABSL_FLAG");
+  if (!IsFlagDef && !DefTokText.starts_with("DECLARE_")) {
     return clang::SourceLocation();
   }
   if (IsFlagDef && (Decl->getDefinition() != Decl)) {
@@ -166,37 +168,62 @@ static clang::SourceRange GetVarDeclFlagDeclLoc(
 /// \brief Given the NodeId of the primary variable defn or decl of a flag,
 /// returns a NodeId for the flag itself.
 /// \param VarId the NodeId for the flag's primary variable (not a _no or _nono)
-static GraphObserver::NodeId NodeIdForFlag(const GraphObserver::NodeId& VarId) {
-  return GraphObserver::NodeId(VarId.getToken(),
-                               "google/gflag#" + VarId.getRawIdentity());
+static GraphObserver::NodeId NodeIdForFlag(GraphObserver& Observer,
+                                           const GraphObserver::NodeId& VarId) {
+  return Observer.MakeNodeId(VarId.getToken(),
+                             "google/gflag#" + VarId.getRawIdentity());
+}
+
+static std::optional<GraphObserver::NodeId> NodeIdForFlagName(
+    GraphObserver& observer, const GraphObserver::NodeId& VarId,
+    const std::string_view flag_name) {
+  if (const KytheClaimToken* token =
+          clang::dyn_cast<KytheClaimToken>(VarId.getToken())) {
+    proto::VName vname;
+    vname.set_signature(flag_name);
+    vname.set_corpus(token->vname().corpus());
+    vname.set_language("flag");
+    return observer.MintNodeIdForVName(vname);
+  }
+  // Cannot determine the corpus.
+  return std::nullopt;
+}
+
+static void RecordFlagName(GraphObserver& Observer,
+                           const GraphObserver::NodeId& FlagNodeId,
+                           const clang::VarDecl* Decl,
+                           clang::SourceRange Range) {
+  // `Range` is assumed to be valid.
+  const auto& Context = Decl->getASTContext();
+  const auto& SM = Context.getSourceManager();
+  const char* begin = SM.getCharacterData(Range.getBegin());
+  const char* end = SM.getCharacterData(Range.getEnd());
+  if (begin >= end) {
+    return;
+  }
+  llvm::StringRef FlagName(begin, end - begin);
+  if (auto FlagNameId =
+          NodeIdForFlagName(Observer, FlagNodeId, FlagName.str())) {
+    Observer.recordUserDefinedNode(*FlagNameId, "name",
+                                   /*Compl=*/std::nullopt);
+    Observer.recordNamedEdge(FlagNodeId, *FlagNameId);
+  }
 }
 
 void GoogleFlagsLibrarySupport::InspectVariable(
-    IndexerASTVisitor& V, GraphObserver::NodeId& NodeId,
-    GraphObserver::NodeId& DeclBodyNodeId, const clang::VarDecl* Decl,
-    GraphObserver::Completeness Compl, const std::vector<Completion>& Compls) {
-  if (NodeId != DeclBodyNodeId) {
-    // Google flags aren't variable templates, so abort early.
-    return;
-  }
+    IndexerASTVisitor& V, const GraphObserver::NodeId& NodeId,
+    const clang::VarDecl* Decl, GraphObserver::Completeness Compl,
+    const std::vector<Completion>& Compls) {
   GraphObserver& GO = V.getGraphObserver();
   auto Range = GetVarDeclFlagDeclLoc(*GO.getLangOptions(), Decl);
   if (Range.isValid()) {
-    auto FlagName = clang::Lexer::getSourceText(
-        clang::Lexer::getAsCharRange(Range,
-                                     Decl->getASTContext().getSourceManager(),
-                                     *GO.getLangOptions()),
-        Decl->getASTContext().getSourceManager(), *GO.getLangOptions());
-    GraphObserver::NameId FlagNameId;
-    // NB: Flags are always global.
-    FlagNameId.Path = FlagName.str();
-    FlagNameId.EqClass = GraphObserver::NameId::NameEqClass::None;
-    GraphObserver::NodeId FlagNodeId = NodeIdForFlag(NodeId);
+    GraphObserver::NodeId FlagNodeId = NodeIdForFlag(GO, NodeId);
     GO.recordUserDefinedNode(FlagNodeId, "google/gflag", Compl);
     if (auto RCC = V.ExplicitRangeInCurrentContext(Range)) {
       GO.recordDefinitionBindingRange(*RCC, FlagNodeId);
-      clang::FileID DeclFile =
-          GO.getSourceManager()->getFileID(Range.getBegin());
+      if (Compl == GraphObserver::Completeness::Definition) {
+        RecordFlagName(GO, FlagNodeId, Decl, Range);
+      }
       // If there are any Completions, this must be a definition.
       for (const auto& C : Compls) {
         if (const auto* NextDecl = llvm::dyn_cast<clang::VarDecl>(C.Decl)) {
@@ -205,12 +232,7 @@ void GoogleFlagsLibrarySupport::InspectVariable(
           if (NextDeclRange.isValid()) {
             clang::FileID NextDeclFile =
                 GO.getSourceManager()->getFileID(NextDeclRange.getBegin());
-            GO.recordCompletionRange(
-                *RCC, NodeIdForFlag(C.DeclId),
-                NextDeclFile == DeclFile
-                    ? GraphObserver::Specificity::UniquelyCompletes
-                    : GraphObserver::Specificity::Completes,
-                FlagNodeId);
+            GO.recordCompletion(NodeIdForFlag(GO, C.DeclId), FlagNodeId);
           }
         }
       }
@@ -220,7 +242,7 @@ void GoogleFlagsLibrarySupport::InspectVariable(
 
 void GoogleFlagsLibrarySupport::InspectDeclRef(
     IndexerASTVisitor& V, clang::SourceLocation DeclRefLocation,
-    const GraphObserver::Range& Ref, GraphObserver::NodeId& RefId,
+    const GraphObserver::Range& Ref, const GraphObserver::NodeId& RefId,
     const clang::NamedDecl* TargetDecl) {
   GraphObserver& GO = V.getGraphObserver();
   const auto* VD = llvm::dyn_cast<const clang::VarDecl>(TargetDecl);
@@ -230,7 +252,7 @@ void GoogleFlagsLibrarySupport::InspectDeclRef(
   }
   auto Range = GetVarDeclFlagDeclLoc(*GO.getLangOptions(), VD, DeclRefLocation);
   if (Range.isValid()) {
-    GO.recordDeclUseLocation(Ref, NodeIdForFlag(RefId),
+    GO.recordDeclUseLocation(Ref, NodeIdForFlag(GO, RefId),
                              GraphObserver::Claimability::Unclaimable,
                              V.IsImplicit(Ref));
   }

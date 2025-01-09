@@ -28,6 +28,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -35,6 +36,7 @@ import javax.tools.FileObject;
 import javax.tools.JavaFileObject;
 import javax.tools.JavaFileObject.Kind;
 import javax.tools.StandardJavaFileManager;
+import org.checkerframework.checker.nullness.qual.Nullable;
 
 /**
  * Wraps the StandardJavaFileManager to track which .java and .class files Javac touches for a given
@@ -52,7 +54,7 @@ class UsageAsInputReportingFileManager extends ForwardingStandardJavaFileManager
 
   /** Returns collection of JavaFileObjects that Javac read the contents of. */
   public Collection<InputUsageRecord> getUsages() {
-    Collection<InputUsageRecord> result = new ArrayList<>();
+    List<InputUsageRecord> result = new ArrayList<>();
     for (InputUsageRecord usageRecord : inputUsageRecords.values()) {
       if (usageRecord.isUsed()) {
         result.add(usageRecord);
@@ -75,7 +77,7 @@ class UsageAsInputReportingFileManager extends ForwardingStandardJavaFileManager
   }
 
   /** Wraps a JavaFileObject in a UsageAsInputReportingJavaFileObject, shares existing instances. */
-  private JavaFileObject map(JavaFileObject item, Optional<Location> location) {
+  private @Nullable JavaFileObject map(JavaFileObject item, Optional<Location> location) {
     if (item == null) {
       return item;
     }

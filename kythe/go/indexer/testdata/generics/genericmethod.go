@@ -6,10 +6,16 @@ func main() {
 	c.Get()
 	//- @Put ref Put
 	c.Put("yup")
+
+	//- @getter defines/binding Getter
+	//- @Get ref Get
+	getter := c.Get
+	//- @getter ref Getter
+	getter()
 }
 
-//- @Container defines/binding Container
-//- @T defines/binding TVar
+// - @Container defines/binding Container
+// - @T defines/binding TVar
 type Container[T any] struct {
 	//- @T ref TVar
 	Element T
@@ -17,12 +23,16 @@ type Container[T any] struct {
 
 // Methods introduce unique tvars
 // TODO(schroederc): relate these to the struct tvar
-//- @Get defines/binding Get
-//- @#0T defines/binding GetTVar
-//- GetTVar.node/kind tvar
-//- @#1T ref GetTVar
-//- !{@#0T ref TVar}
-//- !{@#1T ref TVar}
+// - @Get defines/binding Get
+// - @#0T defines/binding GetTVar
+// - GetTVar.node/kind tvar
+// - @#1T ref GetTVar
+// - !{@#0T ref TVar}
+// - !{@#1T ref TVar}
+// - @"Container[T]" ref TApp
+// - TApp.node/kind tapp
+// - TApp param.0 Container
+// - TApp param.1 GetTVar
 func (c *Container[T]) Get() T {
 	//- @T ref GetTVar
 	//- !{@T ref TVar}
@@ -33,20 +43,18 @@ func (c *Container[T]) Get() T {
 //- Get code GetCode
 //- GetCode.kind "BOX"
 //- GetCode child.1 RecvCode
-//- RecvCode.kind "PARAMETER"
-//- RecvCode child.0 RecvType
-//- RecvType.kind "TYPE"
-//- RecvType.pre_text "*Container[T]"
+//- RecvCode child.0 LookupCode
+//- LookupCode.kind "LOOKUP_BY_PARAM"
 
 // And can technically be renamed
-//- @Put defines/binding Put
-//- @#0A defines/binding PutTVar
-//- PutTVar.node/kind tvar
-//- @#1A ref PutTVar
-//- @#2A ref PutTVar
-//- !{@#0A ref GetTVar}
-//- !{@#1A ref GetTVar}
-//- !{@#2A ref GetTVar}
+// - @Put defines/binding Put
+// - @#0A defines/binding PutTVar
+// - PutTVar.node/kind tvar
+// - @#1A ref PutTVar
+// - @#2A ref PutTVar
+// - !{@#0A ref GetTVar}
+// - !{@#1A ref GetTVar}
+// - !{@#2A ref GetTVar}
 func (c *Container[A]) Put(t A) A {
 	//- @A ref PutTVar
 	//- !{@A ref GetTVar}
@@ -55,7 +63,7 @@ func (c *Container[A]) Put(t A) A {
 	return temp
 }
 
-//- @Interface defines/binding Interface
+// - @Interface defines/binding Interface
 type Interface interface {
 	//- @Get defines/binding GetI
 	Get() string
@@ -70,8 +78,9 @@ type Interface interface {
 // kythe/go/indexer/genericmethod_test.Container.Get.T
 //- GetTVar code TVarCode
 //- TVarCode.kind "BOX"
-//- TVarCode child.0 C
-//- TVarCode child.1 I
+//- TVarCode child.0 TVarName
+//- TVarName child.0 C
+//- TVarName child.1 I
 //- C.kind "CONTEXT"
 //- C.post_child_text "."
 //- C.add_final_list_token "true"

@@ -16,23 +16,27 @@
 
 #include "kythe/cxx/indexer/cxx/marked_source.h"
 
+#include <optional>
+
 #include "absl/flags/flag.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclObjC.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Format/Format.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Sema/Template.h"
-#include "google/protobuf/stubs/common.h"
 #include "kythe/cxx/common/scope_guard.h"
 #include "kythe/cxx/indexer/cxx/clang_range_finder.h"
 #include "kythe/cxx/indexer/cxx/clang_utils.h"
 
-ABSL_FLAG(bool, reformat_marked_source, false,
-          "Reformat source code used in MarkedSource (experimental).");
-ABSL_FLAG(bool, pretty_print_function_prototypes, false,
-          "Synthesize new function prototypes (experimental).");
+ABSL_FLAG(bool, experimental_new_marked_source, false,
+          "Use new signature generation.");
 
 namespace kythe {
 namespace {
@@ -72,55 +76,14 @@ llvm::StringRef GetTextRange(const clang::SourceManager& source_manager,
   return llvm::StringRef(begin, end - begin);
 }
 
-/// \brief The filename to use to refer to code being formatted.
-constexpr char kReplacementFile[] = "x.cc";
-
-/// \brief Reformats `source_text`.
-/// \param replacements the set of transformations applied to `source_text`.
-/// \param incomplete set to true if reformatting failed.
-/// \return the reformatted text buffer (or the empty string).
-std::string Reformat(const clang::LangOptions& lang_options,
-                     llvm::StringRef source_text,
-                     clang::tooling::Replacements* replacements,
-                     bool* incomplete) {
-  clang::format::FormatStyle style =
-      clang::format::getGoogleStyle(clang::format::FormatStyle::LK_Cpp);
-  std::vector<clang::tooling::Range> ranges = {
-      clang::tooling::Range(0, source_text.size())};
-  *replacements = clang::format::reformat(style, source_text, ranges,
-                                          kReplacementFile, incomplete);
-  if (*incomplete) {
-    return "";
-  }
-  llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> InMemoryFileSystem(
-      new llvm::vfs::InMemoryFileSystem);
-  clang::FileManager Files(clang::FileSystemOptions(), InMemoryFileSystem);
-  clang::DiagnosticsEngine Diagnostics(
-      llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs),
-      new clang::DiagnosticOptions);
-  clang::SourceManager Sources(Diagnostics, Files);
-  auto Source = llvm::MemoryBuffer::getMemBuffer(source_text);
-  InMemoryFileSystem->addFileNoOwn(kReplacementFile, 0, *Source);
-  clang::FileID ID =
-      Sources.createFileID(*Files.getFile(kReplacementFile),
-                           clang::SourceLocation(), clang::SrcMgr::C_User);
-  clang::Rewriter Rewrite(Sources, lang_options);
-  clang::tooling::applyAllReplacements(*replacements, Rewrite);
-  std::string result_string;
-  {
-    llvm::raw_string_ostream result_stream(result_string);
-    Rewrite.getEditBuffer(ID).write(result_stream);
-  }
-  return result_string;
-}
-
 /// \brief A span of source text with some attached properties.
 struct Annotation {
   enum Kind : unsigned char {
     TokenText,
     ArgListWithParens,
     Type,
-    QualifiedName
+    QualifiedName,
+    Init
   };
   Kind kind;
   size_t begin;
@@ -136,7 +99,7 @@ class NodeStack {
   /// \brief Copy data from `annotations` and `formatted_range` to
   /// `dest_source`.
   /// \return the MarkedSource node covering an identifier, or null.
-  MarkedSource* ProcessAnnotations(const std::string& formatted_range,
+  MarkedSource* ProcessAnnotations(absl::string_view formatted_range,
                                    const std::vector<Annotation>& annotations,
                                    MarkedSource* dest_source) {
     /// For certain kinds of annotations, we'll substitute our own special
@@ -190,6 +153,9 @@ class NodeStack {
         case Annotation::Type:
           child->set_kind(MarkedSource::TYPE);
           break;
+        case Annotation::Init:
+          child->set_kind(MarkedSource::INITIALIZER);
+          break;
         case Annotation::QualifiedName:
           child->set_kind(MarkedSource::BOX);
           ident_node = child;
@@ -221,8 +187,9 @@ class NodeStack {
   /// \param at_end whether the span on the top of the stack is about to be
   /// popped because there are no other spans that get opened before the
   /// current span closes.
-  void AppendToTop(const std::string& formatted_range, size_t cancel_count,
+  void AppendToTop(absl::string_view formatted_range, size_t cancel_count,
                    size_t start, size_t end, bool at_end) {
+    absl::string_view text = formatted_range.substr(start, end - start);
     CHECK(!nodes_.empty());
     if (cancel_count != 0) {
       return;
@@ -231,19 +198,18 @@ class NodeStack {
     auto* node = nodes_.top().marked_source;
     if (at_end) {
       if (node->child().empty() && node->post_text().empty()) {
-        node->mutable_pre_text()->append(formatted_range, start, end - start);
+        node->mutable_pre_text()->append(text);
       } else {
-        node->mutable_post_text()->append(formatted_range, start, end - start);
+        node->mutable_post_text()->append(text);
       }
     } else {
       // If there are children before this node, we need to add a new BOX
       // to hold this token.
       if (node->child().empty()) {
-        node->mutable_pre_text()->append(formatted_range, start, end - start);
+        node->mutable_pre_text()->append(text);
       } else {
         auto* new_node = node->add_child();
-        new_node->mutable_pre_text()->append(formatted_range, start,
-                                             end - start);
+        new_node->mutable_pre_text()->append(text);
       }
     }
   }
@@ -370,6 +336,14 @@ class DeclAnnotator : public clang::DeclVisitor<DeclAnnotator> {
             NormalizeRange(cache_->source_manager(), cache_->lang_options(),
                            type_source_info->getTypeLoc().getSourceRange());
         InsertTypeAnnotation(type_loc, clang::SourceRange{});
+      }
+    }
+    if (absl::GetFlag(FLAGS_experimental_new_marked_source)) {
+      if (const auto* init = decl->getInit()) {
+        auto init_range =
+            NormalizeRange(cache_->source_manager(), cache_->lang_options(),
+                           init->getSourceRange());
+        InsertAnnotation(init_range, Annotation{Annotation::Init});
       }
     }
   }
@@ -509,8 +483,7 @@ class DeclAnnotator : public clang::DeclVisitor<DeclAnnotator> {
   /// is placed to the left of types, _Nullable is placed to the right of types.
   bool ShouldSkipDecl(const clang::Decl* decl, const clang::QualType& qt,
                       const clang::SourceRange& sr) {
-    clang::Optional<clang::NullabilityKind> k =
-        qt->getNullability(decl->getASTContext());
+    std::optional<clang::NullabilityKind> k = qt->getNullability();
     return k && sr.getBegin().getRawEncoding() > sr.getEnd().getRawEncoding();
   }
 
@@ -523,29 +496,6 @@ class DeclAnnotator : public clang::DeclVisitor<DeclAnnotator> {
   MarkedSource* ident_node_ = nullptr;
   std::vector<Annotation> annotations_;
 };
-}  // anonymous namespace
-
-bool MarkedSourceGenerator::WillGenerateMarkedSource() const {
-  // Be conservative in which kinds of marked source we'll generate.
-  // We can enable more AST node flavors as necessary.
-  if (decl_->isImplicit() || implicit_) {
-    return false;
-  }
-  return llvm::isa<clang::FunctionDecl>(decl_) ||
-         llvm::isa<clang::VarDecl>(decl_) ||
-         llvm::isa<clang::NamespaceDecl>(decl_) ||
-         llvm::isa<clang::TagDecl>(decl_) ||
-         llvm::isa<clang::TypedefNameDecl>(decl_) ||
-         llvm::isa<clang::FieldDecl>(decl_) ||
-         llvm::isa<clang::EnumConstantDecl>(decl_) ||
-         llvm::isa<clang::ObjCMethodDecl>(decl_) ||
-         llvm::isa<clang::ObjCContainerDecl>(decl_) ||
-         llvm::isa<clang::TemplateTypeParmDecl>(decl_) ||
-         llvm::isa<clang::NonTypeTemplateParmDecl>(decl_) ||
-         llvm::isa<clang::TemplateTemplateParmDecl>(decl_) ||
-         llvm::isa<clang::ObjCTypeParamDecl>(decl_) ||
-         llvm::isa<clang::ObjCPropertyDecl>(decl_);
-}
 
 std::string GetDeclName(const clang::LangOptions& lang_options,
                         const clang::NamedDecl* decl) {
@@ -554,15 +504,7 @@ std::string GetDeclName(const clang::LangOptions& lang_options,
   if (identifier_info && !identifier_info->getName().empty()) {
     return std::string(identifier_info->getName());
   } else if (name.getCXXOverloadedOperator() != clang::OO_None) {
-    switch (name.getCXXOverloadedOperator()) {
-#define OVERLOADED_OPERATOR(Name, Spelling, Token, Unary, Binary, MemberOnly) \
-  case clang::OO_##Name:                                                      \
-    return "operator " #Name;
-#include "clang/Basic/OperatorKinds.def"
-#undef OVERLOADED_OPERATOR
-      default:
-        break;
-    }
+    return name.getAsString();
   } else if (const auto* method_decl =
                  llvm::dyn_cast<clang::CXXMethodDecl>(decl)) {
     if (llvm::isa<clang::CXXConstructorDecl>(method_decl)) {
@@ -586,6 +528,46 @@ std::string GetDeclName(const clang::LangOptions& lang_options,
     return sel.getAsString();
   }
   return "";
+}
+
+void CleanMarkedSource(MarkedSource* to_clean) {
+  switch (to_clean->kind()) {
+    case MarkedSource::BOX: {
+      if (to_clean->post_child_text().empty()) {
+        to_clean->set_post_child_text(" ");
+      }
+      to_clean->clear_pre_text();
+      to_clean->clear_post_text();
+    } break;
+    default:
+      break;
+  }
+  for (auto& child : *to_clean->mutable_child()) {
+    CleanMarkedSource(&child);
+  }
+}
+}  // anonymous namespace
+
+bool MarkedSourceGenerator::WillGenerateMarkedSource() const {
+  // Be conservative in which kinds of marked source we'll generate.
+  // We can enable more AST node flavors as necessary.
+  if (decl_->isImplicit() || implicit_) {
+    return false;
+  }
+  return llvm::isa<clang::FunctionDecl>(decl_) ||
+         llvm::isa<clang::VarDecl>(decl_) ||
+         llvm::isa<clang::NamespaceDecl>(decl_) ||
+         llvm::isa<clang::TagDecl>(decl_) ||
+         llvm::isa<clang::TypedefNameDecl>(decl_) ||
+         llvm::isa<clang::FieldDecl>(decl_) ||
+         llvm::isa<clang::EnumConstantDecl>(decl_) ||
+         llvm::isa<clang::ObjCMethodDecl>(decl_) ||
+         llvm::isa<clang::ObjCContainerDecl>(decl_) ||
+         llvm::isa<clang::TemplateTypeParmDecl>(decl_) ||
+         llvm::isa<clang::NonTypeTemplateParmDecl>(decl_) ||
+         llvm::isa<clang::TemplateTemplateParmDecl>(decl_) ||
+         llvm::isa<clang::ObjCTypeParamDecl>(decl_) ||
+         llvm::isa<clang::ObjCPropertyDecl>(decl_);
 }
 
 void MarkedSourceGenerator::ReplaceMarkedSourceWithTemplateArgumentList(
@@ -627,6 +609,7 @@ void MarkedSourceGenerator::ReplaceMarkedSourceWithTemplateArgumentList(
         case clang::TemplateArgument::Declaration:
         case clang::TemplateArgument::NullPtr:
         case clang::TemplateArgument::Integral:
+        case clang::TemplateArgument::StructuralValue:
         case clang::TemplateArgument::Template:
         case clang::TemplateArgument::TemplateExpansion:
         case clang::TemplateArgument::Expression:
@@ -643,11 +626,12 @@ void MarkedSourceGenerator::ReplaceMarkedSourceWithTemplateArgumentList(
       }
     }
     llvm::SmallVector<clang::TemplateArgument, 4> out_arguments;
+    llvm::SmallVector<clang::TemplateArgument, 4> sugared_arguments;
     noprint = first_default;
     for (; noprint < template_args.size(); ++noprint) {
       bool was_ok = !cache_->sema()->CheckTemplateArgumentList(
           template_decl, template_decl->getLocation(), list_prefix, false,
-          out_arguments);
+          out_arguments, sugared_arguments);
       if (was_ok) {
         if (out_arguments.size() != template_args.size()) {
           break;
@@ -798,7 +782,7 @@ bool MarkedSourceGenerator::ReplaceMarkedSourceWithQualifiedName(
   return true;
 }
 
-absl::optional<MarkedSource>
+std::optional<MarkedSource>
 MarkedSourceGenerator::GenerateMarkedSourceUsingSource(
     const GraphObserver::NodeId& decl_id) {
   auto start_loc = decl_->getSourceRange().getBegin();
@@ -822,44 +806,18 @@ MarkedSourceGenerator::GenerateMarkedSourceUsingSource(
               << "\n         to "
               << end_loc_.printToString(cache_->source_manager());
     }
-    return absl::nullopt;
+    return std::nullopt;
   }
   MarkedSource out_sig;
-  if (absl::GetFlag(FLAGS_reformat_marked_source)) {
-    clang::tooling::Replacements replacements;
-    bool incomplete = false;
-    // Weirdly, Clang tooling complains if we don't make a copy of `range` here.
-    auto formatted_range = Reformat(cache_->lang_options(), range.str(),
-                                    &replacements, &incomplete);
-    if (incomplete) {
-      VLOG(1) << "Incomplete reformatting for " << decl_id.getRawIdentity()
-              << " (" << decl_->getQualifiedNameAsString() << ")";
-      return absl::nullopt;
-    }
-    DeclAnnotator annotator(cache_, &replacements, start_loc, formatted_range,
-                            &out_sig, name_range_);
-    annotator.Annotate(decl_);
-    ReplaceMarkedSourceWithQualifiedName(annotator.ident_node());
-  } else {
-    auto range_string = range.str();
-    DeclAnnotator annotator(cache_, nullptr, start_loc, range_string, &out_sig,
-                            name_range_);
-    annotator.Annotate(decl_);
-    ReplaceMarkedSourceWithQualifiedName(annotator.ident_node());
+  auto range_string = range.str();
+  DeclAnnotator annotator(cache_, nullptr, start_loc, range_string, &out_sig,
+                          name_range_);
+  annotator.Annotate(decl_);
+  ReplaceMarkedSourceWithQualifiedName(annotator.ident_node());
+  if (absl::GetFlag(FLAGS_experimental_new_marked_source)) {
+    CleanMarkedSource(&out_sig);
   }
   return out_sig;
-}
-
-MarkedSource MarkedSourceGenerator::GenerateMarkedSourceForFunction(
-    const clang::FunctionDecl* func) {
-  MarkedSource out;
-  ReplaceMarkedSourceWithQualifiedName(out.add_child());
-  auto* child = out.add_child();
-  child->set_kind(MarkedSource::PARAMETER_LOOKUP_BY_PARAM);
-  child->set_pre_text("(");
-  child->set_post_child_text(", ");
-  child->set_post_text(")");
-  return out;
 }
 
 MarkedSource MarkedSourceGenerator::GenerateMarkedSourceForNamedDecl() {
@@ -868,22 +826,18 @@ MarkedSource MarkedSourceGenerator::GenerateMarkedSourceForNamedDecl() {
   return out;
 }
 
-absl::optional<MarkedSource> MarkedSourceGenerator::GenerateMarkedSource(
+std::optional<MarkedSource> MarkedSourceGenerator::GenerateMarkedSource(
     const GraphObserver::NodeId& decl_id) {
   // MarkedSource generation is expensive. If we're not going to write out the
   // marked source later on, don't spend time on it.
   // TODO(zarko): Introduce a similar check for documentation.
   if (!WillGenerateMarkedSource()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (llvm::isa<clang::VarDecl>(decl_) || llvm::isa<clang::FieldDecl>(decl_)) {
     return GenerateMarkedSourceUsingSource(decl_id);
   } else if (const auto* func = llvm::dyn_cast<clang::FunctionDecl>(decl_)) {
-    if (absl::GetFlag(FLAGS_pretty_print_function_prototypes)) {
-      return GenerateMarkedSourceForFunction(func);
-    } else {
-      return GenerateMarkedSourceUsingSource(decl_id);
-    }
+    return GenerateMarkedSourceUsingSource(decl_id);
   } else if (llvm::isa<clang::ObjCPropertyDecl>(decl_)) {
     return GenerateMarkedSourceUsingSource(decl_id);
   } else if (llvm::isa<clang::ObjCMethodDecl>(decl_)) {

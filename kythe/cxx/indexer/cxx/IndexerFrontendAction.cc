@@ -22,7 +22,7 @@
 
 #include "KytheGraphObserver.h"
 #include "KytheVFS.h"
-#include "absl/memory/memory.h"
+#include "absl/log/die_if_null.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -34,7 +34,6 @@
 #include "kythe/cxx/common/json_proto.h"
 #include "kythe/cxx/indexer/cxx/KytheClaimClient.h"
 #include "kythe/cxx/indexer/cxx/KytheVFS.h"
-#include "kythe/cxx/indexer/cxx/proto_conversions.h"
 #include "kythe/proto/analysis.pb.h"
 #include "kythe/proto/buildinfo.pb.h"
 #include "kythe/proto/cxx.pb.h"
@@ -60,8 +59,10 @@ constexpr absl::string_view kBuildDetailsURI =
 /// \brief Range wrapper around unpacked ContextDependentVersion rows.
 class FileContextRows {
  public:
-  using iterator = decltype(
-      std::declval<kythe::proto::ContextDependentVersion>().row().begin());
+  using iterator =
+      decltype(std::declval<kythe::proto::ContextDependentVersion>()
+                   .row()
+                   .begin());
 
   explicit FileContextRows(
       const kythe::proto::CompilationUnit::FileInput& file_input) {
@@ -180,13 +181,11 @@ class TextErrorBuffer : public clang::DiagnosticConsumer {
 std::string IndexCompilationUnit(
     const proto::CompilationUnit& Unit, std::vector<proto::FileData>& Files,
     KytheClaimClient& Client, HashCache* Cache, KytheCachingOutput& Output,
-    const IndexerOptions& Options ABSL_ATTRIBUTE_LIFETIME_BOUND,
+    IndexerOptions& Options ABSL_ATTRIBUTE_LIFETIME_BOUND,
     const MetadataSupports* MetaSupports,
     const LibrarySupports* LibrarySupports) {
-  llvm::sys::path::Style Style =
-      kythe::IndexVFS::DetectStyleFromAbsoluteWorkingDirectory(
-          Unit.working_directory())
-          .value_or(llvm::sys::path::Style::posix);
+  auto [Root, Style] =
+      kythe::IndexVFS::DetectRootStyle(Unit.working_directory());
   HeaderSearchInfo HSI;
   proto::CxxCompilationUnitDetails Details;
   bool HSIValid = false;
@@ -194,7 +193,7 @@ std::string IndexCompilationUnit(
   if (DecodeDetails(Unit, Details)) {
     HSIValid = DecodeHeaderSearchInfo(Details, HSI);
     for (const auto& stat_path : Details.stat_path()) {
-      Dirs.push_back(ToStringRef(stat_path.path()));
+      Dirs.push_back(stat_path.path());
     }
   }
   std::string FixupArgument = ConfigureSystemHeaders(Unit, Files);
@@ -202,22 +201,22 @@ std::string IndexCompilationUnit(
     FixupArgument.clear();
   }
   clang::FileSystemOptions FSO;
-  FSO.WorkingDir = Options.EffectiveWorkingDirectory;
-  if (Style == llvm::sys::path::Style::windows) {
-    FSO.WorkingDir = absl::StrCat("/", FSO.WorkingDir);
-  }
+  FSO.WorkingDir = Root.value();
   for (auto& Path : HSI.paths) {
-    Dirs.push_back(ToStringRef(Path.path));
+    Dirs.push_back(Path.path);
   }
   llvm::IntrusiveRefCntPtr<IndexVFS> VFS(
-      new IndexVFS(Options.EffectiveWorkingDirectory, Files, Dirs, Style));
+      new IndexVFS(Root, Files, Dirs, Style));
   KytheGraphRecorder Recorder(&Output);
-  KytheGraphObserverOptions options;
-  options.build_config = ExtractBuildConfig(Unit);
-  options.default_corpus =
-      Options.UseCompilationCorpusAsDefault ? Unit.v_name().corpus() : "";
+  KytheGraphObserverOptions options{
+      .build_config = ExtractBuildConfig(Unit),
+      .default_corpus =
+          Options.UseCompilationCorpusAsDefault ? Unit.v_name().corpus() : "",
+      .hash_recorder = Options.HashRecorder,
+      .usr_default_corpus = Options.EmitUsrCorpus,
+  };
   KytheGraphObserver Observer(&Recorder, &Client, MetaSupports, VFS,
-                              Options.ReportProfileEvent, options);
+                              Options.ReportProfileEvent, std::move(options));
   if (Cache != nullptr) {
     Output.UseHashCache(Cache);
     Observer.StopDeferringNodes();
@@ -249,11 +248,11 @@ std::string IndexCompilationUnit(
   if (MetaSupports != nullptr) {
     MetaSupports->UseVNameLookup(
         [VFS](const std::string& path, proto::VName* out) {
-          return VFS->get_vname(path, out);
+          return VFS->GetVName(path, *ABSL_DIE_IF_NULL(out));
         });
   }
   std::unique_ptr<IndexerFrontendAction> Action =
-      absl::make_unique<IndexerFrontendAction>(
+      std::make_unique<IndexerFrontendAction>(
           &Observer, HSIValid ? &HSI : nullptr, LibrarySupports, Options);
   llvm::IntrusiveRefCntPtr<clang::FileManager> FileManager(
       new clang::FileManager(FSO, Options.AllowFSAccess ? nullptr : VFS));
@@ -265,7 +264,7 @@ std::string IndexCompilationUnit(
 
   // StdinAdjustSingleFrontendActionFactory takes ownership of its action.
   std::unique_ptr<StdinAdjustSingleFrontendActionFactory> Tool =
-      absl::make_unique<StdinAdjustSingleFrontendActionFactory>(
+      std::make_unique<StdinAdjustSingleFrontendActionFactory>(
           std::move(Action));
   // ToolInvocation doesn't take ownership of ToolActions.
   clang::tooling::ToolInvocation Invocation(

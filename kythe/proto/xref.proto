@@ -18,11 +18,11 @@ syntax = "proto3";
 
 package kythe.proto;
 
-option go_package = "xref_go_proto";
+import "kythe/proto/common.proto";
+
+option go_package = "kythe.io/kythe/proto/xref_go_proto";
 option java_package = "com.google.devtools.kythe.proto";
 option java_multiple_files = true;
-
-import "kythe/proto/common.proto";
 
 // This file defines a cross-reference service interface, based on Kythe data.
 //
@@ -187,7 +187,7 @@ message DecorationsReply {
   string revision = 18;
 
   // The encoded source text for the selected window.
-  bytes source_text = 2;
+  optional bytes source_text = 2;
   string encoding = 3;
 
   // Represents a reference edge source ---KIND---> target.  Each source is an
@@ -345,7 +345,8 @@ message CrossReferencesRequest {
     // Callgraph information will be populated in the CrossReferencesReply.
     DIRECT_CALLERS = 1;
     // Callgraph information will be populated in the CrossReferencesReply.
-    // Calls to override-related functions will also be considered.
+    // Calls to override-related functions will also be considered and each
+    // RelatedAnchor will be marked as speculative.
     OVERRIDE_CALLERS = 2;
   }
 
@@ -353,6 +354,13 @@ message CrossReferencesRequest {
   // in the response.  See the documentation for each CallerKind for more
   // information.
   CallerKind caller_kind = 12;
+
+  // Whether to include scopes for all references.  References with scopes will
+  // appear as the sites of a RelatedAnchor with their semantic scope populating
+  // the anchor/ticket/marked_source fields. If the serving data does not
+  // provide a scope for a reference, the RelatedAnchor will have no sites and
+  // the actual reference will be the primary anchor.
+  bool semantic_scopes = 20;
 
   // Collection of filter globs that determines which facts will be returned for
   // the related nodes of each requested node.  If filter is empty or unset, no
@@ -453,6 +461,9 @@ message CorpusPathFilter {
 
   // Corpus pattern to match against.
   string corpus = 2;
+  // If true, only use filter if the corpus matches. If false, include corpus
+  // in the normal pattern matching behavior for this filter.
+  bool corpus_specific_filter = 6;
   // Root pattern to match against.
   string root = 3;
   // Path pattern to match against.
@@ -517,15 +528,22 @@ message CrossReferencesReply {
   }
 
   message RelatedAnchor {
-    // The anchor covering the related object.
+    // The anchor covering the related object.  The scope/caller of the sites.
     Anchor anchor = 1;
     // A name for the related object.
     kythe.proto.common.MarkedSource marked_source = 5;
     // Specific locations, usually within the related object, that caused
-    // the relationship to exist. This field is relevant to caller sets.
+    // the relationship to exist. This field is relevant to caller sets and
+    // scoped references.
     repeated Anchor site = 3;
-    // The relevant semantic object. Populated for callers.
+    // The relevant semantic object. Populated for callers and scoped
+    // references.
     string ticket = 4;
+
+    // Whether the anchor, and its sites, are speculative and may not be precise
+    // with respect to a program's execution.  Examples include callsites that
+    // may occur through dynamic dispatch or ref/writes/thunk locations.
+    bool speculative = 6;
 
     reserved 2;
   }
@@ -554,18 +572,30 @@ message CrossReferencesReply {
   message Total {
     int64 definitions = 1;
     int64 declarations = 2;
-    int64 references = 3;
+    int64 references = 3 [deprecated = true];
     int64 documentation = 4;
     int64 callers = 5;
 
+    // Map from ref edge type to count.
+    //
+    // Example
+    // /kythe/edge/ref -> 20,
+    // /kythe/edge/ref/writes -> 50
+    map<string, int64> ref_edge_to_count = 7;
     map<string, int64> related_nodes_by_relation = 6;
   }
-  // Total number of cross-references on all pages matching requested filters.
-  // This may be an approximation if allowed by the CrossReferencesRequest.
+  // Total number of cross-references on all pages matching requested kinds,
+  // build configs, and filters. This may be an approximation if allowed by the
+  // CrossReferencesRequest.
   Total total = 5;
 
+  // Total number of cross-references removed based on the request's
+  // corpus_path_filters. This may be an approximation if allowed by the
+  // CrossReferencesRequest.
+  Total filtered = 12;
+
   // A map from ticket to cross-references for each ticket specified in the
-  // request message.
+  // request message unless there are no cross-references for that ticket.
   map<string, CrossReferenceSet> cross_references = 1;
 
   // A map from ticket to the facts provided based on the requested filters,

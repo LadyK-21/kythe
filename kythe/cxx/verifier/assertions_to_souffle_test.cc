@@ -16,6 +16,13 @@
 
 #include "kythe/cxx/verifier/assertions_to_souffle.h"
 
+#include <cstddef>
+#include <string>
+#include <vector>
+
+#include "absl/log/check.h"
+#include "absl/strings/string_view.h"
+#include "absl/strings/strip.h"
 #include "absl/types/span.h"
 #include "gtest/gtest.h"
 #include "kythe/cxx/verifier/assertion_ast.h"
@@ -27,6 +34,8 @@ namespace {
 /// \brief a test fixture that makes it easy to manipulate verifier ASTs.
 class AstTest : public ::testing::Test {
  protected:
+  AstTest() { p_.set_emit_prelude(false); }
+
   /// \return an `Identifier` node with value `string`.
   Identifier* Id(const std::string& string) {
     auto symbol = symbol_table_.intern(string);
@@ -61,9 +70,20 @@ class AstTest : public ::testing::Test {
     return printer.str();
   }
 
+  /// \return the generated program without boilerplate
+  absl::string_view MustGenerateProgram() {
+    std::vector<GoalGroup> groups;
+    SouffleErrorState error_state(&groups);
+    CHECK(p_.Lower(symbol_table_, groups, {}, error_state));
+    auto code = p_.code();
+    CHECK(absl::ConsumeSuffix(&code, ".\n"));
+    return code;
+  }
+
  private:
   Arena arena_;
   SymbolTable symbol_table_;
+  SouffleProgram p_;
 };
 
 TEST_F(AstTest, SelfTest) {
@@ -73,5 +93,104 @@ TEST_F(AstTest, SelfTest) {
   EXPECT_EQ("Range(c,r,p,0,1)", Dump(Range(0, 1, "p", "r", "c")));
 }
 
+TEST_F(AstTest, EmptyProgramTest) { EXPECT_EQ("", MustGenerateProgram()); }
+
+TEST(ErrorStateTest, NoGroups) {
+  std::vector<GoalGroup> groups;
+  SouffleErrorState error_state(&groups);
+  EXPECT_FALSE(error_state.NextStep());
+}
+
+TEST(ErrorStateTest, Empty) {
+  std::vector<GoalGroup> groups{{}};
+  SouffleErrorState error_state(&groups);
+  EXPECT_FALSE(error_state.NextStep());
+}
+
+TEST(ErrorStateTest, SimpleStep) {
+  std::vector<GoalGroup> groups{{.goals = {nullptr}}};
+  SouffleErrorState error_state(&groups);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_FALSE(error_state.IsDoingErrorRecovery());
+  EXPECT_EQ(error_state.target_group(), 0);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  EXPECT_EQ(error_state.GoalForGroup(0), 0);
+  EXPECT_FALSE(error_state.NextStep());
+}
+
+TEST(ErrorStateTest, MultiStep) {
+  std::vector<GoalGroup> groups{{.goals = {nullptr, nullptr}}};
+  SouffleErrorState error_state(&groups);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_FALSE(error_state.IsDoingErrorRecovery());
+  EXPECT_EQ(error_state.target_group(), 0);
+  EXPECT_EQ(error_state.target_goal(), 1);
+  EXPECT_EQ(error_state.GoalForGroup(0), 1);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_TRUE(error_state.IsDoingErrorRecovery());
+  EXPECT_EQ(error_state.target_group(), 0);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  EXPECT_EQ(error_state.GoalForGroup(0), 0);
+  EXPECT_FALSE(error_state.NextStep());
+}
+
+TEST(ErrorStateTest, MultiGroupSingleStep) {
+  std::vector<GoalGroup> groups{{.goals = {nullptr}}, {.goals = {nullptr}}};
+  SouffleErrorState error_state(&groups);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 1);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  EXPECT_EQ(error_state.GoalForGroup(1), 0);
+  EXPECT_EQ(error_state.GoalForGroup(0), -1);
+  EXPECT_EQ(error_state.IsFinished(1), false);
+  EXPECT_EQ(error_state.IsFinished(0), false);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 0);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  EXPECT_EQ(error_state.GoalForGroup(0), 0);
+  EXPECT_EQ(error_state.IsFinished(1), true);
+  EXPECT_EQ(error_state.IsFinished(0), false);
+  EXPECT_FALSE(error_state.NextStep());
+}
+
+TEST(ErrorStateTest, MultiGroupMultiStep) {
+  std::vector<GoalGroup> groups{{.goals = {nullptr, nullptr}},
+                                {.goals = {nullptr, nullptr}}};
+  SouffleErrorState error_state(&groups);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 1);
+  EXPECT_EQ(error_state.target_goal(), 1);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 1);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 0);
+  EXPECT_EQ(error_state.target_goal(), 1);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 0);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  EXPECT_FALSE(error_state.NextStep());
+}
+
+TEST(ErrorStateTest, SkipEmptyGroups) {
+  std::vector<GoalGroup> groups{
+      {}, {}, {.goals = {nullptr}}, {}, {}, {.goals = {nullptr}}, {}, {}};
+  SouffleErrorState error_state(&groups);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 5);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  EXPECT_EQ(error_state.GoalForGroup(5), 0);
+  EXPECT_EQ(error_state.GoalForGroup(4), -1);
+  EXPECT_EQ(error_state.IsFinished(5), false);
+  EXPECT_EQ(error_state.IsFinished(6), true);
+  EXPECT_EQ(error_state.IsFinished(7), true);
+  ASSERT_TRUE(error_state.NextStep());
+  EXPECT_EQ(error_state.target_group(), 2);
+  EXPECT_EQ(error_state.target_goal(), 0);
+  EXPECT_EQ(error_state.IsFinished(5), true);
+  EXPECT_EQ(error_state.IsFinished(2), false);
+  EXPECT_EQ(error_state.GoalForGroup(2), 0);
+  EXPECT_FALSE(error_state.NextStep());
+}
 }  // anonymous namespace
 }  // namespace kythe::verifier

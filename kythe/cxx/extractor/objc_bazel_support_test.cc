@@ -16,8 +16,13 @@
 
 #include "objc_bazel_support.h"
 
-#include "glog/logging.h"
+#include <string>
+#include <vector>
+
+#include "absl/log/initialize.h"
+#include "google/protobuf/stubs/common.h"
 #include "gtest/gtest.h"
+#include "third_party/bazel/src/main/protobuf/extra_actions_base.pb.h"
 
 namespace kythe {
 namespace {
@@ -156,7 +161,7 @@ TEST(ObjcExtractorBazelMain, TestRunScriptThatFails) {
 
 int main(int argc, char** argv) {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
-  google::InitGoogleLogging(argv[0]);
+  absl::InitializeLog();
   ::testing::InitGoogleTest(&argc, argv);
   int result = RUN_ALL_TESTS();
   return result;

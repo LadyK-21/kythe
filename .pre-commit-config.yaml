@@ -33,13 +33,13 @@ repos:
         # Use a verbose Python regex and YAML single-quoted string to make this more legible.
         exclude: '(?x)
             ^(AUTHORS|CONTRIBUTORS|WORKSPACE|LICENSE)$
-            |(^|/)BUILD([^/*]*\.bazel)?$
+            |(^|/)BUILD([^*/]*\.bazel)?$
+            |(^|/)requirements\.[^.]+$
             |\.(pb\.go|md|yaml|yml|json|html|bzl|lock|patch|BUILD|WORKSPACE|kzip|tex|tac|bazelproject)$
             |(^|/)(\.[^/]*|go\.mod|go\.sum)$
             |^tools/|^third_party/|^kythe/web/site/
             |worker/info/(admin|host)$
-            |/project\.clj$|/style\.css$|bazelrc$|/Doxyfile\.kythe$|/docs/llvm-2014/Makefile$
-            |^kythe/proto/.*_rust_proto/'
+            |/project\.clj$|/style\.css$|bazelrc$|/Doxyfile\.kythe$|/docs/llvm-2014/Makefile$'
     -   id: shellcheck
         name: shellcheck
         description: Runs `shellcheck` on shell files
@@ -58,7 +58,7 @@ repos:
         name: Format w/ clang-format
         description: Formats files using clang-format
         language: system
-        entry: clang-format-11 --style=file -i
+        entry: clang-format-14 --style=file -i
         files: '\.(c|cc|h|i|m|js|proto)$'
     -   id: gofmt
         name: Format w/ gofmt
@@ -86,12 +86,14 @@ repos:
         language: script
         entry: tools/git/test-affected-targets.sh
         stages: [push]
-    -   id: rustfmt
-        name: Format w/ rustfmt
-        description: Runs `rustfmt` on Rust files
+    -   id: gazelle
+        name: Build Cleaner
+        description: Clean build dependencies with gazelle
         language: system
-        entry: rustfmt
-        args: [--config-path, tools/rust/rustfmt.toml]
-        types: [rust]
-        exclude: '^(kythe/proto/.*|third_party/.*)'
+        entry: bazel run //:gazelle
+    -   id: generate
+        name: Regenerate Files
+        description: Regenerate source tree artifacts
+        language: system
+        entry: tools/git/update-generated-sources.sh
 exclude: '(.*/testdata/.*|third_party/.*|tools/platforms/configs/rbe_default/.*)$'

@@ -19,34 +19,34 @@
 // results are available to the caller.
 //
 // Usage:
-//   var c golang.Extractor
-//   if _, err := c.Locate("fmt"); err != nil {
-//     log.Fatalf(`Unable to locate package "fmt": %v`, err)
-//   }
-//   c.Extract()
-//   for _, pkg := range c.Packages {
-//     if pkg.Err != nil {
-//       log.Printf("Error extracting %q: %v", pkg.Path, pkg.Err)
-//     } else {
-//       writeOutput(pkg)
-//     }
-//   }
 //
+//	var c golang.Extractor
+//	if _, err := c.Locate("fmt"); err != nil {
+//	  log.Fatalf(`Unable to locate package "fmt": %v`, err)
+//	}
+//	c.Extract()
+//	for _, pkg := range c.Packages {
+//	  if pkg.Err != nil {
+//	    log.Errorf("extracting %q: %v", pkg.Path, pkg.Err)
+//	  } else {
+//	    writeOutput(pkg)
+//	  }
+//	}
 package golang // import "kythe.io/kythe/go/extractors/golang"
 
 import (
 	"context"
 	"fmt"
 	"go/build"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"kythe.io/kythe/go/extractors/govname"
 	"kythe.io/kythe/go/platform/analysis"
-	"kythe.io/kythe/go/platform/kindex"
+	"kythe.io/kythe/go/platform/kzip"
 	"kythe.io/kythe/go/platform/vfs"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/ptypes"
 
 	"bitbucket.org/creachadair/stringset"
@@ -283,7 +283,7 @@ func (p *Package) Extract() error {
 		}); err == nil {
 			cu.Details = append(cu.Details, info)
 		} else {
-			log.Printf("WARNING: failed to marshal GoPackageInfo for CompilationUnit: %v", err)
+			log.Warningf("failed to marshal GoPackageInfo for CompilationUnit: %v", err)
 		}
 	}
 
@@ -355,7 +355,7 @@ func (p *Package) EachUnit(ctx context.Context, f func(cu *apb.CompilationUnit, 
 			if err != nil {
 				return fmt.Errorf("opening input: %v", err)
 			}
-			fd, err := kindex.FileData(ri.Info.Path, rc)
+			fd, err := kzip.FileData(ri.Info.Path, rc)
 			rc.Close()
 			if err != nil {
 				return fmt.Errorf("reading input: %v", err)
@@ -412,7 +412,7 @@ func (p *Package) addFiles(cu *apb.CompilationUnit, root, base string, names []s
 					}); err == nil {
 						details = append(details, info)
 					} else {
-						log.Printf("WARNING: failed to marshal GoPackageInfo for input: %v", err)
+						log.Warningf("failed to marshal GoPackageInfo for input: %v", err)
 					}
 				}
 			}
@@ -472,7 +472,7 @@ func (p *Package) addInput(cu *apb.CompilationUnit, bp *build.Package) {
 			}); err == nil {
 				fi.Details = append(fi.Details, info)
 			} else {
-				log.Printf("WARNING: failed to marshal GoPackageInfo for input: %v", err)
+				log.Warningf("failed to marshal GoPackageInfo for input: %v", err)
 			}
 		}
 	}

@@ -16,16 +16,17 @@
 
 #include "kythe/cxx/indexer/proto/file_descriptor_walker.h"
 
+#include <optional>
+
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
-#include "glog/logging.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/repeated_field.h"
-#include "google/protobuf/stubs/map_util.h"
 #include "kythe/cxx/common/kythe_metadata_file.h"
 #include "kythe/cxx/common/schema/edges.h"
 #include "kythe/cxx/indexer/proto/marked_source.h"
@@ -33,10 +34,10 @@
 #include "kythe/cxx/indexer/proto/proto_graph_builder.h"
 #include "kythe/proto/generated_message_info.pb.h"
 #include "re2/re2.h"
-#include "re2/stringpiece.h"
 
 namespace kythe {
 namespace lang_proto {
+namespace {
 
 using ::google::protobuf::Descriptor;
 using ::google::protobuf::DescriptorProto;
@@ -54,14 +55,6 @@ using ::google::protobuf::ServiceDescriptor;
 using ::google::protobuf::ServiceDescriptorProto;
 using ::google::protobuf::SourceCodeInfo;
 using ::kythe::proto::VName;
-
-namespace {
-
-// TODO(justbuchanan): remove all re2::StringPiece code once re2 is compatible
-// with absl::string_view.
-re2::StringPiece ToStringPiece(absl::string_view v) {
-  return {v.data(), v.size()};
-}
 
 // Pushes a value onto a proto location lookup path, and automatically
 // removes it when destroyed.  See the documentation for
@@ -86,17 +79,36 @@ class ScopedLookup {
   const int component_;
 };
 
-absl::optional<absl::string_view> TypeName(const FieldDescriptor& field) {
+std::optional<absl::string_view> TypeName(const EnumDescriptor& desc) {
+  return desc.name();
+}
+
+std::optional<absl::string_view> TypeName(const Descriptor& desc) {
+  return desc.name();
+}
+
+std::optional<absl::string_view> TypeName(const FieldDescriptor& field) {
   if (field.is_map()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (const EnumDescriptor* desc = field.enum_type()) {
-    return desc->name();
+    return TypeName(*desc);
   }
   if (const Descriptor* desc = field.message_type()) {
-    return desc->name();
+    return TypeName(*desc);
   }
-  return absl::nullopt;
+  return std::nullopt;
+}
+
+template <typename DescriptorType>
+void TruncateLocationToTypeName(Location& location,
+                                const DescriptorType& desc) {
+  std::optional<absl::string_view> type_name = TypeName(desc);
+  if (!type_name.has_value() || location.end <= location.begin ||
+      (location.end - location.begin) <= type_name->size()) {
+    return;
+  }
+  location.begin = (location.end - type_name->size());
 }
 
 }  // namespace
@@ -128,7 +140,7 @@ Location FileDescriptorWalker::LocationOfLeadingComments(
   comment_location.end = entity_location.begin - line_offset_of_entity - 1;
   int next_line_number = entity_start_line - 1;
   absl::string_view bottom_line = line_index_.GetLine(next_line_number);
-  while (RE2::FullMatch(ToStringPiece(bottom_line), R"(\s*\*/?\s*)")) {
+  while (RE2::FullMatch(bottom_line, R"((\s*\*/?\s*)|(\s*//\n))")) {
     comment_location.begin -= bottom_line.size();
     --next_line_number;
     bottom_line = line_index_.GetLine(next_line_number);
@@ -143,7 +155,7 @@ Location FileDescriptorWalker::LocationOfLeadingComments(
     std::string comment_re =
         absl::StrCat(R"(\s*(?://|/?\*\s*))", RE2::QuoteMeta(comment_line),
                      R"(\s*(?:\*/)?\s*)");
-    if (!RE2::FullMatch(ToStringPiece(actual_line), comment_re)) {
+    if (!RE2::FullMatch(actual_line, comment_re)) {
       LOG(ERROR) << "Leading comment line mismatch: [" << comment_line
                  << "] vs. [" << actual_line << "]"
                  << "(line " << next_line_number << ")";
@@ -174,14 +186,13 @@ Location FileDescriptorWalker::LocationOfTrailingComments(
   int line_number = entity_start_line;
   for (; line_number <= line_index_.line_count(); ++line_number) {
     absl::string_view entity_line = line_index_.GetLine(line_number);
-    re2::StringPiece comment_start;
-    if (RE2::PartialMatch(ToStringPiece(entity_line), R"((\s*(?:/\*|//)))",
-                          &comment_start)) {
+    absl::string_view comment_start;
+    if (RE2::PartialMatch(entity_line, R"((\s*(?:/\*|//)))", &comment_start)) {
       comment_location.begin = line_index_.ComputeByteOffset(line_number, 0) +
                                (comment_start.data() - entity_line.data());
       comment_location.end =
           line_index_.ComputeByteOffset(line_number + 1, 0) - 1;
-      if (RE2::PartialMatch(ToStringPiece(entity_line), top_comment_line_re)) {
+      if (RE2::PartialMatch(entity_line, top_comment_line_re)) {
         comment_lines.erase(comment_lines.begin());
       }
       break;
@@ -197,7 +208,7 @@ Location FileDescriptorWalker::LocationOfTrailingComments(
     std::string comment_re =
         absl::StrCat(R"(\s*(?://|/?\*\s*))", RE2::QuoteMeta(comment_line),
                      R"(\s*(?:\*/)?\s*)");
-    if (!RE2::FullMatch(ToStringPiece(actual_line), comment_re)) {
+    if (!RE2::FullMatch(actual_line, comment_re)) {
       LOG(ERROR) << "Trailing comment line mismatch: [" << comment_line
                  << "] vs. [" << actual_line << "]"
                  << "(line " << line_number << ")";
@@ -208,7 +219,7 @@ Location FileDescriptorWalker::LocationOfTrailingComments(
   }
 
   absl::string_view bottom_line = line_index_.GetLine(line_number);
-  while (RE2::FullMatch(ToStringPiece(bottom_line), R"(\s*\*/?\s*)")) {
+  while (RE2::FullMatch(bottom_line, R"(\s*\*/?\s*)")) {
     comment_location.end += bottom_line.size();
     ++line_number;
     bottom_line = line_index_.GetLine(line_number);
@@ -370,17 +381,17 @@ void FileDescriptorWalker::VisitGeneratedProtoInfo() {
 }
 
 namespace {
-absl::optional<proto::VName> VNameForBuiltinType(FieldDescriptor::Type type) {
+std::optional<proto::VName> VNameForBuiltinType(FieldDescriptor::Type type) {
   // TODO(zrlk): Emit builtins.
-  return absl::nullopt;
+  return std::nullopt;
 }
 }  // anonymous namespace
 
-absl::optional<proto::VName> FileDescriptorWalker::VNameForFieldType(
+std::optional<proto::VName> FileDescriptorWalker::VNameForFieldType(
     const FieldDescriptor* field_proto) {
   if (field_proto->is_map()) {
     // Maps are technically TYPE_MESSAGE, but don't have a useful VName.
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (field_proto->type() == FieldDescriptor::TYPE_MESSAGE ||
       field_proto->type() == FieldDescriptor::TYPE_GROUP) {
@@ -393,7 +404,7 @@ absl::optional<proto::VName> FileDescriptorWalker::VNameForFieldType(
 }
 
 void FileDescriptorWalker::AttachMarkedSource(
-    const proto::VName& vname, const absl::optional<MarkedSource>& code) {
+    const proto::VName& vname, const std::optional<MarkedSource>& code) {
   if (code) {
     builder_->AddCodeFact(vname, *code);
   }
@@ -427,7 +438,8 @@ void FileDescriptorWalker::VisitField(const std::string* parent_name,
                                 v_name, location);
   }
 
-  AttachMarkedSource(v_name, GenerateMarkedSourceForDescriptor(field));
+  AttachMarkedSource(v_name,
+                     GenerateMarkedSourceForDescriptor(field, builder_));
 
   // Check for [deprecated=true] annotations and emit deprecation tags.
   if (field->options().deprecated()) {
@@ -449,14 +461,7 @@ void FileDescriptorWalker::VisitField(const std::string* parent_name,
     // covering the type name itself, not the full package name.
     // This is consistent with other languages and avoids the possibility
     // of a multi-line span, which some UIs have problems with.
-    if (absl::optional<absl::string_view> type_name = TypeName(*field)) {
-      absl::string_view full_type = absl::string_view(content_).substr(
-          type_location.begin, type_location.end - type_location.begin);
-      if (auto pos = full_type.rfind(*type_name); pos != full_type.npos) {
-        type_location.begin += pos;
-        type_location.end = type_location.begin + type_name->size();
-      }
-    }
+    TruncateLocationToTypeName(type_location, *field);
   }
   if (auto type = VNameForFieldType(field)) {
     // TODO: add value_type back in at some point.
@@ -473,10 +478,9 @@ void FileDescriptorWalker::VisitField(const std::string* parent_name,
     absl::string_view content = absl::string_view(content_);
     absl::string_view type_name = content.substr(
         type_location.begin, type_location.end - type_location.begin);
-    re2::StringPiece key, val;
-    if (RE2::FullMatch(ToStringPiece(type_name),
-                       R"(\s*map\s*<\s*(\S+)\s*,\s*(\S+)\s*>\s*)", &key,
-                       &val)) {
+    absl::string_view key, val;
+    if (RE2::FullMatch(type_name, R"(\s*map\s*<\s*(\S+)\s*,\s*(\S+)\s*>\s*)",
+                       &key, &val)) {
       // Add references to map type components.
       if (auto key_type = VNameForFieldType(field->message_type()->field(0))) {
         size_t key_start = key.data() - content.data();
@@ -562,8 +566,8 @@ void FileDescriptorWalker::VisitNestedEnumTypes(const std::string& message_name,
       if (nested_proto->options().deprecated()) {
         builder_->SetDeprecated(v_name);
       }
-      AttachMarkedSource(v_name,
-                         GenerateMarkedSourceForDescriptor(nested_proto));
+      AttachMarkedSource(
+          v_name, GenerateMarkedSourceForDescriptor(nested_proto, builder_));
     }
 
     // Visit values
@@ -607,8 +611,8 @@ void FileDescriptorWalker::VisitNestedTypes(const std::string& message_name,
       if (nested_proto->options().deprecated()) {
         builder_->SetDeprecated(v_name);
       }
-      AttachMarkedSource(v_name,
-                         GenerateMarkedSourceForDescriptor(nested_proto));
+      AttachMarkedSource(
+          v_name, GenerateMarkedSourceForDescriptor(nested_proto, builder_));
     }
 
     // Need to visit nested enum and message types first!
@@ -642,7 +646,8 @@ void FileDescriptorWalker::VisitOneofs(const std::string& message_name,
       InitializeLocation(span, &location);
 
       builder_->AddOneofToMessage(message, v_name, location);
-      AttachMarkedSource(v_name, GenerateMarkedSourceForDescriptor(oneof));
+      AttachMarkedSource(v_name,
+                         GenerateMarkedSourceForDescriptor(oneof, builder_));
     }
 
     // No need to add fields; they're also fields of the message
@@ -675,7 +680,8 @@ void FileDescriptorWalker::VisitMessagesAndEnums(const std::string* ns_name,
       InitializeLocation(span, &location);
 
       builder_->AddMessageType(ns, v_name, location);
-      AttachMarkedSource(v_name, GenerateMarkedSourceForDescriptor(dp));
+      AttachMarkedSource(v_name,
+                         GenerateMarkedSourceForDescriptor(dp, builder_));
       if (dp->options().deprecated()) {
         builder_->SetDeprecated(v_name);
       }
@@ -709,7 +715,8 @@ void FileDescriptorWalker::VisitMessagesAndEnums(const std::string* ns_name,
       InitializeLocation(span, &location);
 
       builder_->AddEnumType(ns, v_name, location);
-      AttachMarkedSource(v_name, GenerateMarkedSourceForDescriptor(dp));
+      AttachMarkedSource(v_name,
+                         GenerateMarkedSourceForDescriptor(dp, builder_));
     }
 
     // Visit enum values and add kythe bindings for them
@@ -738,7 +745,8 @@ void FileDescriptorWalker::VisitEnumValues(const EnumDescriptor* dp,
     if (val_dp->options().deprecated()) {
       builder_->SetDeprecated(v_name);
     }
-    AttachMarkedSource(v_name, GenerateMarkedSourceForDescriptor(val_dp));
+    AttachMarkedSource(v_name,
+                       GenerateMarkedSourceForDescriptor(val_dp, builder_));
   }
 }
 
@@ -838,26 +846,30 @@ void FileDescriptorWalker::VisitNestedFields(const std::string& name_prefix,
 
 void FileDescriptorWalker::AddComments(const VName& v_name,
                                        const std::vector<int>& path) {
-  const auto* protoc_location =
-      google::protobuf::FindOrNull(path_location_map_, path);
+  auto protoc_iter = path_location_map_.find(path);
+  if (protoc_iter == path_location_map_.end()) {
+    return;
+  }
+  const auto& protoc_location = protoc_iter->second;
   absl::StatusOr<PartialLocation> readable_location =
       ParseLocation(location_map_[path]);
-  if (protoc_location != nullptr && readable_location.ok()) {
-    Location entity_location;
-    InitializeLocation(location_map_[path], &entity_location);
-    PartialLocation coordinates = *readable_location;
-    if (protoc_location->has_leading_comments()) {
-      Location comment_location = LocationOfLeadingComments(
-          entity_location, coordinates.start_line, coordinates.start_column,
-          protoc_location->leading_comments());
-      builder_->AddDocComment(v_name, comment_location);
-    }
-    if (protoc_location->has_trailing_comments()) {
-      Location comment_location = LocationOfTrailingComments(
-          entity_location, coordinates.start_line, coordinates.start_column,
-          protoc_location->trailing_comments());
-      builder_->AddDocComment(v_name, comment_location);
-    }
+  if (!readable_location.ok()) {
+    return;
+  }
+  Location entity_location;
+  InitializeLocation(location_map_[path], &entity_location);
+  PartialLocation coordinates = *readable_location;
+  if (protoc_location.has_leading_comments()) {
+    Location comment_location = LocationOfLeadingComments(
+        entity_location, coordinates.start_line, coordinates.start_column,
+        protoc_location.leading_comments());
+    builder_->AddDocComment(v_name, comment_location);
+  }
+  if (protoc_location.has_trailing_comments()) {
+    Location comment_location = LocationOfTrailingComments(
+        entity_location, coordinates.start_line, coordinates.start_column,
+        protoc_location.trailing_comments());
+    builder_->AddDocComment(v_name, comment_location);
   }
 }
 
@@ -885,7 +897,8 @@ void FileDescriptorWalker::VisitRpcServices(const std::string* ns_name,
       InitializeLocation(span, &location);
 
       builder_->AddService(ns, v_name, location);
-      AttachMarkedSource(v_name, GenerateMarkedSourceForDescriptor(dp));
+      AttachMarkedSource(v_name,
+                         GenerateMarkedSourceForDescriptor(dp, builder_));
     }
 
     // Visit methods
@@ -905,11 +918,12 @@ void FileDescriptorWalker::VisitRpcServices(const std::string* ns_name,
                               MethodDescriptorProto::kNameFieldNumber);
         Location method_location;
         InitializeLocation(location_map_[lookup_path], &method_location);
-        AttachMarkedSource(method,
-                           GenerateMarkedSourceForDescriptor(method_dp));
+        AttachMarkedSource(
+            method, GenerateMarkedSourceForDescriptor(method_dp, builder_));
         builder_->AddMethodToService(v_name, method, method_location);
       }
 
+      VName input_sig;
       {
         // Add rpc method's input argument
         ScopedLookup input_num(&lookup_path,
@@ -917,10 +931,14 @@ void FileDescriptorWalker::VisitRpcServices(const std::string* ns_name,
         Location input_location;
         InitializeLocation(location_map_[lookup_path], &input_location);
         const Descriptor* input = method_dp->input_type();
-        VName input_sig = builder_->VNameForDescriptor(input);
+        // Only decorate the type name, not the full <package>.<type> span.
+        TruncateLocationToTypeName(input_location, *input);
+
+        input_sig = builder_->VNameForDescriptor(input);
         builder_->AddArgumentToMethod(method, input_sig, input_location);
       }
 
+      VName output_sig;
       {
         // Add rpc method's output argument
         ScopedLookup output_num(&lookup_path,
@@ -928,9 +946,13 @@ void FileDescriptorWalker::VisitRpcServices(const std::string* ns_name,
         Location output_location;
         InitializeLocation(location_map_[lookup_path], &output_location);
         const Descriptor* output = method_dp->output_type();
-        VName output_sig = builder_->VNameForDescriptor(output);
+        // Only decorate the type name, not the full <package>.<type> span.
+        TruncateLocationToTypeName(output_location, *output);
+
+        output_sig = builder_->VNameForDescriptor(output);
         builder_->AddArgumentToMethod(method, output_sig, output_location);
       }
+      builder_->AddMethodType(method, input_sig, output_sig);
     }
   }
 }

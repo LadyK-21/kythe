@@ -19,7 +19,8 @@
 // This is useful in environments which don't have analogous GNU tools
 // installed by default.
 // Example:
-//   shasum_tool <input_file>
+//
+//	shasum_tool <input_file>
 package main
 
 import (
@@ -28,9 +29,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
+
+	"kythe.io/kythe/go/util/log"
 )
 
 func main() {

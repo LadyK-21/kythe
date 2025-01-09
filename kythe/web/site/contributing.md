@@ -60,7 +60,7 @@ clang-format -i --style=file <filename>
 If you forgot to do this for a commit, you can amend it easily:
 
 {% highlight bash %}
-clang-format i --style=file $(git show --pretty="" --name-only <SHA1>)
+clang-format -i --style=file $(git show --pretty="" --name-only <SHA1>)
 git commit --amend
 {% endhighlight %}
 
@@ -94,8 +94,4 @@ can index.
 ### User Interfaces
 
 Kythe emits a lot of data and there are *many* ways to interpret/display it all.
-Kythe has provided a
-[sample UI]({{site.baseuri}}/examples#visualizing-cross-references), but it
-currently only scratches the surface of Kythe's data.  Other ideas for
-visualizers include an interactive graph, a documentation browser and a source file
-hierarchical overview.
+Ideas for visualizers include an interactive graph, a documentation browser and a source file hierarchical overview.

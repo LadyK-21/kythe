@@ -18,19 +18,21 @@ cc_library(
         "-Wno-unused-variable",
         "-Wno-implicit-fallthrough",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         "//external:libmemcached",
         "//kythe/cxx/common:json_proto",
         "//kythe/cxx/common:lib",
+        "//kythe/cxx/common:sha256_hasher",
         "//kythe/cxx/common/indexing:caching_output",
         "//kythe/proto:analysis_cc_proto",
         "//kythe/proto:common_cc_proto",
         "//kythe/proto:filecontext_cc_proto",
         "//kythe/proto:storage_cc_proto",
-        "@boringssl//:crypto",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/types:optional",
         "@com_google_protobuf//:protobuf",
     ],
 )
@@ -48,6 +50,9 @@ cc_library(
         "-Wno-unused-variable",
         "-Wno-implicit-fallthrough",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         ":clang_utils",
         ":kythe_claim_client",
@@ -57,10 +62,14 @@ cc_library(
         "//kythe/proto:buildinfo_cc_proto",
         "//kythe/proto:claim_cc_proto",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_protobuf//:protobuf",
+        "@com_google_protobuf//src/google/protobuf/io",
+        "@com_google_protobuf//src/google/protobuf/io:gzip_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -71,7 +80,8 @@ cc_library(
     hdrs = ["semantic_hash.h"],
     deps = [
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@llvm-project//clang:ast",
         "@llvm-project//llvm:Support",
     ],
@@ -84,7 +94,6 @@ cc_library(
     ],
     hdrs = [
         "clang_utils.h",
-        "proto_conversions.h",
     ],
     copts = [
         "-Wno-non-virtual-dtor",
@@ -92,12 +101,8 @@ cc_library(
         "-Wno-implicit-fallthrough",
     ],
     deps = [
-        ":indexed_parent_map",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
         "@llvm-project//clang:ast",
-        "@llvm-project//clang:basic",
-        "@llvm-project//clang:lex",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -116,10 +121,12 @@ cc_library(
         "-Wno-implicit-fallthrough",
     ],
     deps = [
+        ":graph_observer",
         ":indexer_ast_hooks",
         ":indexer_library_support",
+        ":kythe_graph_observer",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/log",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
     ],
@@ -137,9 +144,8 @@ cc_library(
         ":indexer_ast_hooks",
         ":indexer_library_support",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:optional",
         "@com_googlesource_code_re2//:re2",
         "@llvm-project//clang:ast",
     ],
@@ -160,11 +166,15 @@ cc_library(
     ],
     deps = [
         ":kythe_claim_client",
+        "//kythe/cxx/common:lib",
+        "//kythe/cxx/common:sha256_hasher",
+        "//kythe/cxx/common/indexing:caching_output",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@boringssl//:crypto",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:optional",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
         "@llvm-project//clang:basic",
         "@llvm-project//clang:lex",
@@ -190,6 +200,7 @@ cc_library(
     deps = [
         ":clang_range_finder",
         ":clang_utils",
+        ":decl_printer",
         ":graph_observer",
         ":indexed_parent_iterator",
         ":indexed_parent_map",
@@ -199,17 +210,23 @@ cc_library(
         ":node_set",
         ":recursive_type_visitor",
         ":semantic_hash",
+        ":stream_adapter",
         ":type_map",
         "//kythe/cxx/common:lib",
         "//kythe/cxx/common:scope_guard",
         "//kythe/cxx/extractor:supported_language",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:die_if_null",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:optional",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
         "@com_googlesource_code_re2//:re2",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -226,7 +243,10 @@ cc_library(
     hdrs = ["indexed_parent_map.h"],
     deps = [
         "//kythe/cxx/common:scope_guard",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@llvm-project//clang:ast",
         "@llvm-project//llvm:Support",
     ],
@@ -238,7 +258,6 @@ cc_library(
     hdrs = ["indexed_parent_iterator.h"],
     deps = [
         ":indexed_parent_map",
-        "@com_google_absl//absl/types:optional",
         "@llvm-project//clang:ast",
     ],
 )
@@ -247,7 +266,10 @@ cc_library(
     name = "type_map",
     srcs = ["type_map.cc"],
     hdrs = ["type_map.h"],
-    deps = ["@llvm-project//clang:ast"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@llvm-project//clang:ast",
+    ],
 )
 
 cc_library(
@@ -266,7 +288,7 @@ cc_library(
         "//kythe/cxx/common:lib",
         "//kythe/cxx/extractor:supported_language",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/log",
         "@llvm-project//clang:ast",
     ],
 )
@@ -290,7 +312,8 @@ cc_library(
         "//kythe/cxx/common:lib",
         "//kythe/cxx/extractor:path_utils",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings:str_format",
         "@llvm-project//clang:basic",
         "@llvm-project//clang:index",
@@ -322,10 +345,13 @@ cc_library(
         "//kythe/cxx/common/indexing:output",
         "//kythe/cxx/common/schema:edges",
         "//kythe/cxx/extractor:supported_language",
+        "//kythe/proto:storage_cc_proto",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:die_if_null",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
@@ -348,6 +374,9 @@ cc_library(
         "-Wno-unused-variable",
         "-Wno-implicit-fallthrough",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         ":clang_range_finder",
         ":clang_utils",
@@ -355,8 +384,9 @@ cc_library(
         ":kythe_claim_client",
         "//kythe/cxx/common:scope_guard",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_protobuf//:protobuf",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -380,14 +410,19 @@ cc_library(
         "-Wno-unused-variable",
         "-Wno-implicit-fallthrough",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         ":clang_utils",
         ":indexer_ast_hooks",
         ":indexer_library_support",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
         "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/log",
         "@com_google_protobuf//:protobuf",
+        "@com_google_protobuf//src/google/protobuf/io",
+        "@com_google_protobuf//src/google/protobuf/io:tokenizer",
         "@llvm-project//clang:ast",
     ],
 )
@@ -405,19 +440,41 @@ cc_library(
         "-Wno-unused-variable",
         "-Wno-implicit-fallthrough",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         ":clang_utils",
+        ":stream_adapter",
         "//kythe/cxx/common:json_proto",
         "//kythe/cxx/common:lib",
         "//kythe/proto:analysis_cc_proto",
         "//kythe/proto:common_cc_proto",
         "//kythe/proto:storage_cc_proto",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
-        "@com_google_absl//absl/types:optional",
         "@com_google_protobuf//:protobuf",
         "@llvm-project//clang:basic",
+        "@llvm-project//clang:tooling",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_test(
+    name = "vfs_test",
+    srcs = ["KytheVFS_test.cc"],
+    deps = [
+        ":vfs",
+        "//kythe/proto:analysis_cc_proto",
+        "//third_party:gtest",
+        "//third_party:gtest_main",
+        "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -440,6 +497,7 @@ cc_library(
         ":google_flags_library_support",
         ":graph_observer",
         ":imputed_constructor_library_support",
+        ":indexer_ast_hooks",
         ":indexer_pp_callbacks",
         ":kythe_claim_client",
         ":kythe_graph_observer",
@@ -459,7 +517,9 @@ cc_library(
         "//kythe/proto:filecontext_cc_proto",
         "//kythe/proto:storage_cc_proto",
         "//third_party/llvm/src:clang_builtin_headers",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:die_if_null",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
@@ -482,6 +542,9 @@ cc_binary(
         "-Wno-unused-variable",
         "-Wno-implicit-fallthrough",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     deps = [
         ":frontend",
         ":google_flags_library_support",
@@ -493,10 +556,10 @@ cc_binary(
         "//kythe/cxx/common:init",
         "//kythe/cxx/common:lib",
         "//kythe/cxx/common:re2_flag",
-        "@com_github_google_glog//:glog",
         "@com_google_absl//absl/flags:flag",
         "@com_google_absl//absl/flags:parse",
         "@com_google_absl//absl/flags:usage",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_protobuf//:protobuf",
@@ -508,7 +571,6 @@ cc_library(
     hdrs = ["node_set.h"],
     deps = [
         ":graph_observer",
-        "@com_google_absl//absl/types:optional",
     ],
 )
 
@@ -523,8 +585,11 @@ cc_test(
         "-Wno-unused-variable",
         "-Wno-implicit-fallthrough",
     ],
+    features = [
+        "-layering_check",  # TODO: protocolbuffers/protobuf#10889
+    ],
     linkopts = select({
-        ":darwin": ["-headerpad_max_install_names"],
+        "@platforms//os:osx": ["-headerpad_max_install_names"],
         "//conditions:default": [],
     }),
     deps = [
@@ -533,7 +598,7 @@ cc_test(
         "//kythe/cxx/common/indexing:output",
         "//kythe/cxx/common/indexing:testlib",
         "//third_party:gtest",
-        "@com_google_absl//absl/memory",
+        "@com_github_inazarenko_protobuf_matchers//protobuf-matchers",
         "@com_google_protobuf//:protobuf",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:frontend",
@@ -547,6 +612,7 @@ cc_library(
     hdrs = ["recursive_type_visitor.h"],
     deps = [
         "@llvm-project//clang:ast",
+        "@llvm-project//clang:tooling",
     ],
 )
 
@@ -565,7 +631,10 @@ cc_library(
     srcs = ["clang_range_finder.cc"],
     hdrs = ["clang_range_finder.h"],
     deps = [
-        "@com_github_google_glog//:glog",
+        ":stream_adapter",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:die_if_null",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
         "@llvm-project//clang:lex",
@@ -582,7 +651,8 @@ cc_test(
         ":clang_range_finder",
         "//third_party:gtest",
         "//third_party:gtest_main",
-        "@com_github_google_glog//:glog",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:die_if_null",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@llvm-project//clang:ast",
@@ -593,8 +663,50 @@ cc_test(
     ],
 )
 
-config_setting(
-    name = "darwin",
-    values = {"cpu": "darwin"},
-    visibility = ["//visibility:public"],
+cc_library(
+    name = "stream_adapter",
+    srcs = ["stream_adapter.cc"],
+    hdrs = ["stream_adapter.h"],
+    deps = [
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_library(
+    name = "decl_printer",
+    srcs = ["decl_printer.cc"],
+    hdrs = ["decl_printer.h"],
+    deps = [
+        ":graph_observer",
+        ":indexed_parent_iterator",
+        ":indexed_parent_map",
+        ":semantic_hash",
+        "@com_google_absl//absl/base:core_headers",
+        "@llvm-project//clang:ast",
+        "@llvm-project//clang:basic",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_test(
+    name = "decl_printer_test",
+    srcs = ["decl_printer_test.cc"],
+    deps = [
+        ":decl_printer",
+        ":graph_observer",
+        ":indexed_parent_map",
+        ":semantic_hash",
+        "//third_party:gtest",
+        "//third_party:gtest_main",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:die_if_null",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//clang:ast",
+        "@llvm-project//clang:ast_matchers",
+        "@llvm-project//clang:basic",
+        "@llvm-project//clang:frontend",
+        "@llvm-project//clang:tooling",
+    ],
 )

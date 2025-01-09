@@ -21,13 +21,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"kythe.io/kythe/go/extractors/bazel"
 	"kythe.io/kythe/go/extractors/govname"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/ptypes"
 	"kythe.io/kythe/go/util/vnameutil"
 
@@ -49,7 +49,7 @@ Extract a Kythe compilation record for Go from a Bazel extra action.
 
 Arguments:
  <extra-action> is a file containing a wire format ExtraActionInfo protobuf.
- <output-file>  is the path where the output kindex file is written.
+ <output-file>  is the path where the output kzip file is written.
  <vname-config> is the path of a VName configuration JSON file.
 
 Flags:
@@ -115,6 +115,8 @@ type extractor struct {
 
 func (e *extractor) checkAction(_ context.Context, info *bazel.ActionInfo) error {
 	e.compileArgs = parseCompileArgs(info.Arguments)
+	// rules_go may pass GOROOT as a flag instead of an environment variable.
+	e.goroot = e.compileArgs.goroot
 	for name, value := range info.Environment {
 		switch name {
 		case "GOOS":
@@ -196,6 +198,7 @@ type compileArgs struct {
 	include          []string          // additional include directories
 	importPath       string            // output package import path
 	trimPrefix       string            // prefix to trim from source paths
+	goroot           string            // goroot if passed via a flag
 }
 
 func parseCompileArgs(args []string) *compileArgs {
@@ -248,6 +251,8 @@ func parseCompileArgs(args []string) *compileArgs {
 			c.srcs = append(c.srcs, arg)
 		case "tags":
 			c.tags = append(c.tags, arg)
+		case "goroot":
+			c.goroot = arg
 		}
 		flag = "" // reset
 	}

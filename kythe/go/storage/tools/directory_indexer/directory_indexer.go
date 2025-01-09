@@ -18,32 +18,34 @@
 // files in the given directories.
 //
 // For instance, a file 'kythe/javatests/com/google/devtools/kythe/util/BUILD' would produce two entries:
-//   {
-//     "fact_name": "/kythe/node/kind",
-//     "fact_value": "file",
-//     "source": {
-//       "signature": "c2b0d93b83c1b0e22fd564278be1b0373b1dcb67ff3bb77c2f29df7c393fe580",
-//       "corpus": "kythe",
-//       "root": "",
-//       "path": "kythe/javatests/com/google/devtools/kythe/util/BUILD",
-//       "language": ""
-//     }
-//   }
-//   {
-//     "fact_name": "/kythe/text",
-//     "fact_value": "...",
-//     "source": {
-//       "signature": "c2b0d93b83c1b0e22fd564278be1b0373b1dcb67ff3bb77c2f29df7c393fe580",
-//       "corpus": "kythe",
-//       "root": "",
-//       "path": "kythe/javatests/com/google/devtools/kythe/util/BUILD",
-//       "language": ""
-//     }
-//   }
+//
+//	{
+//	  "fact_name": "/kythe/node/kind",
+//	  "fact_value": "file",
+//	  "source": {
+//	    "signature": "c2b0d93b83c1b0e22fd564278be1b0373b1dcb67ff3bb77c2f29df7c393fe580",
+//	    "corpus": "kythe",
+//	    "root": "",
+//	    "path": "kythe/javatests/com/google/devtools/kythe/util/BUILD",
+//	    "language": ""
+//	  }
+//	}
+//	{
+//	  "fact_name": "/kythe/text",
+//	  "fact_value": "...",
+//	  "source": {
+//	    "signature": "c2b0d93b83c1b0e22fd564278be1b0373b1dcb67ff3bb77c2f29df7c393fe580",
+//	    "corpus": "kythe",
+//	    "root": "",
+//	    "path": "kythe/javatests/com/google/devtools/kythe/util/BUILD",
+//	    "language": ""
+//	  }
+//	}
 //
 // Usage:
-//   directory_indexer --corpus kythe --root kythe ~/repo/kythe/ \
-//     --exclude '^buildtools,^bazel-,^third_party,~$,#$,(^|/)\.'
+//
+//	directory_indexer --corpus kythe --root kythe ~/repo/kythe/ \
+//	  --exclude '^buildtools,^bazel-,^third_party,~$,#$,(^|/)\.'
 package main
 
 import (
@@ -51,7 +53,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -60,8 +61,8 @@ import (
 	"kythe.io/kythe/go/platform/delimited"
 	"kythe.io/kythe/go/platform/vfs"
 	"kythe.io/kythe/go/util/flagutil"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/vnameutil"
-
 	spb "kythe.io/kythe/proto/storage_go_proto"
 )
 
@@ -109,7 +110,7 @@ func emitPath(path string, info os.FileInfo, err error) error {
 	}
 
 	if *verbose {
-		log.Printf("Reading/emitting %s", path)
+		log.Infof("Reading/emitting %s", path)
 	}
 	contents, err := vfs.ReadFile(context.Background(), path)
 	if err != nil {

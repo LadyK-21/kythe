@@ -2,12 +2,10 @@
 
 //- @U defines/binding TyvarU
 template<typename U>
-//- @T defines/binding AliasTemplate
+//- @T defines/binding T
 //- @U ref TyvarU
 using T = U;
 
-//- AliasTemplate.node/kind abs
-//- TyvarU.node/kind absvar
-//- AliasTemplate param.0 TyvarU
-//- Alias childof AliasTemplate
+//- TyvarU.node/kind tvar
+//- T tparam.0 TyvarU
 //- Alias.node/kind talias

@@ -33,13 +33,15 @@
 #include "GraphObserver.h"
 #include "IndexerASTHooks.h"
 #include "IndexerPPCallbacks.h"
+#include "absl/log/check.h"
+#include "absl/log/die_if_null.h"
 #include "absl/memory/memory.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Tooling/Tooling.h"
-#include "glog/logging.h"
 #include "kythe/cxx/common/kythe_metadata_file.h"
 #include "kythe/cxx/extractor/cxx_details.h"
 #include "llvm/ADT/DenseMap.h"
@@ -72,13 +74,20 @@ class IndexerFrontendAction : public clang::ASTFrontendAction {
                         const LibrarySupports* LibrarySupports,
                         const IndexerOptions& options
                             ABSL_ATTRIBUTE_LIFETIME_BOUND)
-      : Observer(CHECK_NOTNULL(GO)),
+      : Observer(ABSL_DIE_IF_NULL(GO)),
         HeaderConfigValid(Info != nullptr),
-        Supports(*CHECK_NOTNULL(LibrarySupports)),
+        Supports(*ABSL_DIE_IF_NULL(LibrarySupports)),
         options_(options) {
     if (HeaderConfigValid) {
       HeaderConfig = *Info;
     }
+  }
+
+ protected:
+  bool PrepareToExecuteAction(clang::CompilerInstance& CI) override {
+    CI.getPreprocessorOpts().DisablePCHOrModuleValidation =
+        clang::DisableValidationForModuleKind::All;
+    return clang::ASTFrontendAction::PrepareToExecuteAction(CI);
   }
 
  private:
@@ -109,7 +118,7 @@ class IndexerFrontendAction : public clang::ASTFrontendAction {
       }
       HeaderSearch.ClearFileInfo();
       HeaderSearch.SetSearchPaths(Lookups, HeaderConfig.angled_dir_idx,
-                                  HeaderConfig.system_dir_idx, false,
+                                  HeaderConfig.system_dir_idx,
                                   llvm::DenseMap<unsigned, unsigned>());
       HeaderSearch.SetSystemHeaderPrefixes(HeaderConfig.system_prefixes);
     }
@@ -118,14 +127,13 @@ class IndexerFrontendAction : public clang::ASTFrontendAction {
       Observer->setLangOptions(&CI.getLangOpts());
       Observer->setPreprocessor(&CI.getPreprocessor());
     }
-    return absl::make_unique<IndexerASTConsumer>(Observer, Supports, options_);
+    return std::make_unique<IndexerASTConsumer>(Observer, Supports, options_);
   }
 
   bool BeginSourceFileAction(clang::CompilerInstance& CI) override {
     if (Observer) {
-      CI.getPreprocessor().addPPCallbacks(absl::make_unique<IndexerPPCallbacks>(
-          CI.getPreprocessor(), *Observer, options_.Verbosity,
-          options_.UsrByteSize));
+      CI.getPreprocessor().addPPCallbacks(std::make_unique<IndexerPPCallbacks>(
+          CI.getPreprocessor(), *Observer, options_.UsrByteSize));
     }
     CI.getLangOpts().CommentOpts.ParseAllComments = true;
     CI.getLangOpts().RetainCommentsFromSystemHeaders = true;
@@ -207,7 +215,7 @@ class StdinAdjustSingleFrontendActionFactory
 std::string IndexCompilationUnit(
     const proto::CompilationUnit& Unit, std::vector<proto::FileData>& Files,
     KytheClaimClient& ClaimClient, HashCache* Cache, KytheCachingOutput& Output,
-    const IndexerOptions& Options ABSL_ATTRIBUTE_LIFETIME_BOUND,
+    IndexerOptions& Options ABSL_ATTRIBUTE_LIFETIME_BOUND,
     const MetadataSupports* MetaSupports,
     const LibrarySupports* LibrarySupports);
 

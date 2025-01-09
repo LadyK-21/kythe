@@ -23,7 +23,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 	"sync"
 
@@ -37,6 +36,7 @@ import (
 	"kythe.io/kythe/go/storage/stream"
 	"kythe.io/kythe/go/storage/table"
 	"kythe.io/kythe/go/util/disksort"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/schema/edges"
 	"kythe.io/kythe/go/util/schema/facts"
 	"kythe.io/kythe/go/util/schema/nodes"
@@ -92,7 +92,7 @@ func Run(ctx context.Context, rd stream.EntryReader, db keyvalue.DB, opts *Optio
 		opts = new(Options)
 	}
 
-	log.Println("Starting serving pipeline")
+	log.InfoContext(ctx, "Starting serving pipeline")
 
 	out := &servingOutput{
 		xs: &table.KVProto{DB: db},
@@ -132,7 +132,7 @@ func Run(ctx context.Context, rd stream.EntryReader, db keyvalue.DB, opts *Optio
 		}
 	}()
 
-	err := sortedEdges.Read(func(x interface{}) error {
+	err := sortedEdges.Read(func(x any) error {
 		e := x.(*srvpb.Edge)
 		pesIn <- e
 		dIn <- e
@@ -152,7 +152,7 @@ func Run(ctx context.Context, rd stream.EntryReader, db keyvalue.DB, opts *Optio
 }
 
 func combineNodesAndEdges(ctx context.Context, opts *Options, out *servingOutput, rdIn stream.EntryReader) (disksort.Interface, error) {
-	log.Println("Writing partial edges")
+	log.InfoContext(ctx, "Writing partial edges")
 
 	tree := filetree.NewMap()
 	rd := func(f func(*spb.Entry) error) error {
@@ -181,7 +181,7 @@ func combineNodesAndEdges(ctx context.Context, opts *Options, out *servingOutput
 	}
 	tree = nil
 
-	log.Println("Writing complete edges")
+	log.InfoContext(ctx, "Writing complete edges")
 
 	cSorter, err := opts.diskSorter(edgeLesser{}, edgeMarshaler{})
 	if err != nil {
@@ -189,13 +189,13 @@ func combineNodesAndEdges(ctx context.Context, opts *Options, out *servingOutput
 	}
 
 	var n *srvpb.Node
-	if err := partialSorter.Read(func(i interface{}) error {
+	if err := partialSorter.Read(func(i any) error {
 		e := i.(*srvpb.Edge)
 		if n == nil || n.Ticket != e.Source.Ticket {
 			n = e.Source
 			if e.Target != nil {
 				if opts.Verbose {
-					log.Printf("WARNING: missing node facts for: %q", e.Source.Ticket)
+					log.WarningContextf(ctx, "missing node facts for: %q", e.Source.Ticket)
 				}
 				// This is needed to satisfy later parts of the pipeline that look for targetless edges
 				// to signify new nodes.
@@ -298,7 +298,7 @@ func writeCompletedEdges(ctx context.Context, output disksort.Interface, e *srvp
 
 func writePagedEdges(ctx context.Context, edges <-chan *srvpb.Edge, out table.Proto, opts *Options) error {
 	buffer := out.Buffered()
-	log.Println("Writing EdgeSets")
+	log.InfoContext(ctx, "Writing EdgeSets")
 	esb := &assemble.EdgeSetBuilder{
 		MaxEdgePageSize: opts.MaxPageSize,
 		Output: func(ctx context.Context, pes *srvpb.PagedEdgeSet) error {
@@ -362,7 +362,7 @@ type decorationFragment struct {
 
 type fragmentLesser struct{}
 
-func (fragmentLesser) Less(a, b interface{}) bool {
+func (fragmentLesser) Less(a, b any) bool {
 	x, y := a.(*decorationFragment), b.(*decorationFragment)
 	if x.fileTicket == y.fileTicket {
 		if len(x.decoration.Decoration) == 0 || len(y.decoration.Decoration) == 0 {
@@ -397,12 +397,12 @@ func writeDecorAndRefs(ctx context.Context, opts *Options, edges <-chan *srvpb.E
 		return err
 	}
 
-	log.Println("Writing decoration fragments")
+	log.InfoContext(ctx, "Writing decoration fragments")
 	if err := createDecorationFragments(ctx, edges, fragments); err != nil {
 		return err
 	}
 
-	log.Println("Writing completed FileDecorations")
+	log.InfoContext(ctx, "Writing completed FileDecorations")
 
 	// refSorter stores a *ipb.CrossReference for each Decoration from fragments
 	refSorter, err := opts.diskSorter(refLesser{}, refMarshaler{})
@@ -418,7 +418,7 @@ func writeDecorAndRefs(ctx context.Context, opts *Options, edges <-chan *srvpb.E
 		decor   *srvpb.FileDecorations
 		targets map[string]*srvpb.Node
 	)
-	if err := fragments.Read(func(x interface{}) error {
+	if err := fragments.Read(func(x any) error {
 		df := x.(*decorationFragment)
 		fileTicket := df.fileTicket
 		fragment := df.decoration
@@ -444,7 +444,7 @@ func writeDecorAndRefs(ctx context.Context, opts *Options, edges <-chan *srvpb.E
 				targets[n.Ticket] = n
 			}
 			if file == nil {
-				log.Printf("Warning: no file set for anchor. fileTicket:[%v] curFile:[%v] fragment:[%v]", fileTicket, curFile, fragment)
+				log.InfoContextf(ctx, "Warning: no file set for anchor. fileTicket:[%v] curFile:[%v] fragment:[%v]", fileTicket, curFile, fragment)
 				return nil
 			}
 
@@ -453,7 +453,7 @@ func writeDecorAndRefs(ctx context.Context, opts *Options, edges <-chan *srvpb.E
 				cr, err := assemble.CrossReference(file, norm, d, targets[d.Target])
 				if err != nil {
 					if opts.Verbose {
-						log.Printf("WARNING: error assembling cross-reference: %v", err)
+						log.WarningContextf(ctx, "error assembling cross-reference: %v", err)
 					}
 					continue
 				}
@@ -482,7 +482,7 @@ func writeDecorAndRefs(ctx context.Context, opts *Options, edges <-chan *srvpb.E
 		}
 	}
 
-	log.Println("Writing CrossReferences")
+	log.InfoContext(ctx, "Writing CrossReferences")
 
 	xb := &assemble.CrossReferencesBuilder{
 		MaxPageSize: opts.MaxPageSize,
@@ -494,7 +494,7 @@ func writeDecorAndRefs(ctx context.Context, opts *Options, edges <-chan *srvpb.E
 		},
 	}
 	var curTicket string
-	if err := refSorter.Read(func(i interface{}) error {
+	if err := refSorter.Read(func(i any) error {
 		cr := i.(*ipb.CrossReference)
 
 		if curTicket != cr.Referent.Ticket {
@@ -536,7 +536,7 @@ func writeDecor(ctx context.Context, t table.BufferedProto, decor *srvpb.FileDec
 
 type edgeLesser struct{}
 
-func (edgeLesser) Less(a, b interface{}) bool {
+func (edgeLesser) Less(a, b any) bool {
 	x, y := a.(*srvpb.Edge), b.(*srvpb.Edge)
 	if x.Source.Ticket == y.Source.Ticket {
 		if x.Target == nil || y.Target == nil {
@@ -555,16 +555,16 @@ func (edgeLesser) Less(a, b interface{}) bool {
 
 type edgeMarshaler struct{}
 
-func (edgeMarshaler) Marshal(x interface{}) ([]byte, error) { return proto.Marshal(x.(proto.Message)) }
+func (edgeMarshaler) Marshal(x any) ([]byte, error) { return proto.Marshal(x.(proto.Message)) }
 
-func (edgeMarshaler) Unmarshal(rec []byte) (interface{}, error) {
+func (edgeMarshaler) Unmarshal(rec []byte) (any, error) {
 	var e srvpb.Edge
 	return &e, proto.Unmarshal(rec, &e)
 }
 
 type fragmentMarshaler struct{}
 
-func (fragmentMarshaler) Marshal(x interface{}) ([]byte, error) {
+func (fragmentMarshaler) Marshal(x any) ([]byte, error) {
 	f := x.(*decorationFragment)
 	rec, err := proto.Marshal(f.decoration)
 	if err != nil {
@@ -573,7 +573,7 @@ func (fragmentMarshaler) Marshal(x interface{}) ([]byte, error) {
 	return bytes.Join([][]byte{[]byte(f.fileTicket), rec}, []byte("\000")), nil
 }
 
-func (fragmentMarshaler) Unmarshal(rec []byte) (interface{}, error) {
+func (fragmentMarshaler) Unmarshal(rec []byte) (any, error) {
 	ss := bytes.SplitN(rec, []byte("\000"), 2)
 	if len(ss) != 2 {
 		return nil, errors.New("invalid decorationFragment encoding")
@@ -590,22 +590,25 @@ func (fragmentMarshaler) Unmarshal(rec []byte) (interface{}, error) {
 
 type refMarshaler struct{}
 
-func (refMarshaler) Marshal(x interface{}) ([]byte, error) { return proto.Marshal(x.(proto.Message)) }
+func (refMarshaler) Marshal(x any) ([]byte, error) { return proto.Marshal(x.(proto.Message)) }
 
-func (refMarshaler) Unmarshal(rec []byte) (interface{}, error) {
+func (refMarshaler) Unmarshal(rec []byte) (any, error) {
 	var e ipb.CrossReference
 	return &e, proto.Unmarshal(rec, &e)
 }
 
 type refLesser struct{}
 
-func (refLesser) Less(a, b interface{}) bool {
+func (refLesser) Less(a, b any) bool {
 	x, y := a.(*ipb.CrossReference), b.(*ipb.CrossReference)
 	if x.Referent.Ticket == y.Referent.Ticket {
 		if x.TargetAnchor == nil || y.TargetAnchor == nil {
 			return x.TargetAnchor == nil
 		} else if x.TargetAnchor.Kind == y.TargetAnchor.Kind {
 			if x.TargetAnchor.Span.Start.ByteOffset == y.TargetAnchor.Span.Start.ByteOffset {
+				if x.TargetAnchor.Span.End.ByteOffset == y.TargetAnchor.Span.End.ByteOffset {
+					return x.TargetAnchor.SnippetSpan.End.ByteOffset < y.TargetAnchor.SnippetSpan.End.ByteOffset
+				}
 				return x.TargetAnchor.Span.End.ByteOffset < y.TargetAnchor.Span.End.ByteOffset
 			}
 			return x.TargetAnchor.Span.Start.ByteOffset < y.TargetAnchor.Span.Start.ByteOffset

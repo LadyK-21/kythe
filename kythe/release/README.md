@@ -13,7 +13,6 @@ extractors, and tools directly supported by the Kythe team.
    - java_indexer.jar         :: Java indexer
    - jvm_indexer.jar          :: JVM jar indexer
    - proto_indexer            :: Protocol-buffer indexer
-   - rust_indexer             :: Rust indexer
    - textproto_indexer        :: Text-format protocol-buffer indexer
  - extractors
    - bazel_cxx_extractor      :: C++ extractor for Bazel extra_actions
@@ -22,7 +21,6 @@ extractors, and tools directly supported by the Kythe team.
    - bazel_java_extractor.jar :: Java extractor for Bazel extra_actions
    - bazel_jvm_extractor.jar  :: JVM extractor for Bazel extra_actions
    - bazel_proto_extractor    :: Bazel Protocol-buffer extractor
-   - bazel_rust_extractor     :: Bazel Rust extractor
    - cxx_extractor            :: C++ extractor
    - go_extractor             :: Go extractor
    - javac-wrapper.sh         :: javac wrapper script for extractor
@@ -98,9 +96,7 @@ rm -rf "$SERVING"
 # connections on port 9898.  Using `--listen :9898` instead will allow
 # connections from other networked machines.
 /opt/kythe/tools/http_server --serving_table "$SERVING" \
-  --public_resources /opt/kythe/web/ui --listen localhost:9898
-
-# The sample web UI will be serving at http://localhost:9898
+  --listen localhost:9898
 
 # /opt/kythe/tools/kythe and /opt/kythe/tools/kwazthis can be used with the
 # local running server by passing the '--api=http://localhost:9898' flag.
@@ -166,11 +162,10 @@ preserved. See the Examples for usage.
 
 ## Indexers
 
-`indexers/cxx_indexer`, `indexers/go_indexer`, `indexers/java_indexer.jar`,
-and `indexers/rust_indexer` analyze the .kzip files produced by the extractors
-and emit a stream of protobuf wire-encoded facts (entries) that conform to
-https://kythe.io/schema. The output stream can be processed by many of the
-accompanying binaries in the `tools/` directory.
+`indexers/cxx_indexer`, `indexers/go_indexer`, and `indexers/java_indexer.jar`
+analyze the .kzip files produced by the extractors and emit a stream of protobuf
+wire-encoded facts (entries) that conform to https://kythe.io/schema. The output
+stream can be processed by many of the accompanying binaries in the `tools/` directory.
 
 ### Examples
 
@@ -178,14 +173,10 @@ accompanying binaries in the `tools/` directory.
       /tmp/kythe/065c7a9a0789d09b73d74b0ca17cfcec6643d69a6218d095d19a770b10dffdf9.kzip \
       > java.entries
 
-    indexers/cxx_indexers \
+    indexers/cxx_indexer \
       /tmp/kythe/579d266e5914257a9bd4458eb9b218690280ae15123d642025f224d10f64e6f3.kzip \
       > cxx.entries
 
     indexers/go_indexer \
       /tmp/kythe/579d266e5914257a9bd4458eb9b218690280ae15123d642025f224d10f64e6f3.kzip \
       > go.entries
-
-    indexers/rust_indexer \
-      /tmp/kythe/579d266e5914257a9bd4458eb9b218690280ae15123d642025f224d10f64e6f3.kzip \
-      > rust.entries

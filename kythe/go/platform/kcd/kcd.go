@@ -18,7 +18,6 @@
 // implementation of a Kythe compilation database.
 //
 // Design documentation: kythe/docs/kythe-compilation-database.txt
-//
 package kcd // import "kythe.io/kythe/go/platform/kcd"
 
 import (
@@ -32,6 +31,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	spb "kythe.io/kythe/proto/storage_go_proto"
 )
 
 // Reader represents read-only access to an underlying storage layer used to
@@ -177,9 +178,10 @@ func IsCorpusValid(c string) bool { return c != "" && !containsWhitespace(c) }
 // FindFilter gives constraints on which compilations are matched by a call to
 // the Find method of compdb.Reader.
 type FindFilter struct {
-	Revisions []string // Include only these revisions (exact match).
-	Languages []string // Include only these languages (Kythe language names).
-	Corpus    []string // Include only these corpus labels (exact match).
+	UnitCorpus  []string // Include only these unit corpus labels (exact match)
+	Revisions   []string // Include only these revisions (exact match).
+	Languages   []string // Include only these languages (Kythe language names).
+	BuildCorpus []string // Include only these build corpus labels (exact match).
 
 	Targets []*regexp.Regexp // Include only compilations for these targets.
 	Sources []*regexp.Regexp // Include only compilations for these sources.
@@ -198,7 +200,11 @@ func (ff *FindFilter) Compile() (*CompiledFilter, error) {
 	if err != nil {
 		return nil, err
 	}
-	cf.CorpusMatches, err = stringMatcher(ff.Corpus...)
+	cf.BuildCorpusMatches, err = stringMatcher(ff.BuildCorpus...)
+	if err != nil {
+		return nil, err
+	}
+	cf.UnitCorpusMatches, err = stringMatcher(ff.UnitCorpus...)
 	if err != nil {
 		return nil, err
 	}
@@ -225,8 +231,8 @@ func (ff *FindFilter) Compile() (*CompiledFilter, error) {
 // non-empty query terms.
 func (ff *FindFilter) IsEmpty() bool {
 	return ff == nil ||
-		(len(ff.Revisions) == 0 && len(ff.Languages) == 0 && len(ff.Corpus) == 0 &&
-			len(ff.Targets) == 0 && len(ff.Sources) == 0 && len(ff.Outputs) == 0)
+		(len(ff.Revisions) == 0 && len(ff.Languages) == 0 && len(ff.BuildCorpus) == 0 &&
+			len(ff.Targets) == 0 && len(ff.Sources) == 0 && len(ff.Outputs) == 0) && len(ff.UnitCorpus) == 0
 }
 
 // The Unit interface expresses the capabilities required to represent a
@@ -245,10 +251,15 @@ type Unit interface {
 	// Digest produces a unique string representation of a unit sufficient to
 	// serve as a content-addressable digest.
 	Digest() string
+
+	// LookupVName looks up and returns the VName for the given file path
+	// or nil if it could not be found or the operation is unsupported.
+	LookupVName(path string) *spb.VName
 }
 
 // Index represents the indexable terms of a compilation.
 type Index struct {
+	Corpus   string   // The Kythe corpus name, e.g., "kythe"
 	Language string   // The Kythe language name, e.g., "c++".
 	Output   string   // The output name, e.g., "bazel-out/foo.o".
 	Inputs   []string // The digests of all required inputs.
@@ -281,12 +292,13 @@ func isLowerHex(b byte) bool { return ('0' <= b && b <= '9') || ('a' <= b && b <
 
 // A CompiledFilter is a collection of matchers compiled from a FindFilter.
 type CompiledFilter struct {
-	RevisionMatches func(...string) bool
-	CorpusMatches   func(...string) bool
-	LanguageMatches func(...string) bool
-	TargetMatches   func(...string) bool
-	OutputMatches   func(...string) bool
-	SourcesMatch    func(...string) bool
+	RevisionMatches    func(...string) bool
+	BuildCorpusMatches func(...string) bool
+	UnitCorpusMatches  func(...string) bool
+	LanguageMatches    func(...string) bool
+	TargetMatches      func(...string) bool
+	OutputMatches      func(...string) bool
+	SourcesMatch       func(...string) bool
 }
 
 // matcher returns a function that reports whether any of its string arguments

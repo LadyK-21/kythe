@@ -1,5 +1,492 @@
 # Release Notes
 
+## [v0.0.68] - 2025-01-06
+#### Bug Fixes
+* **go_indexer:**
+  * emit docs nodes for interface methods (#6060) ([07be8602](https://github.com/kythe/kythe/commit/07be8602deb772705ed78c71fe5b74137c7fce09))
+  * emit bindings for named interface method params (#6061) ([e1713667](https://github.com/kythe/kythe/commit/e17136673a160d087e86ca0cab2ac43b7564cb36))
+  * emit nodes for anonymous interface params (#6062) ([1d7a58a1](https://github.com/kythe/kythe/commit/1d7a58a1797801462a2cd1a86128a2328c9256dd))
+  * only handle top-level flags (#6063) ([f6b2e265](https://github.com/kythe/kythe/commit/f6b2e265012974038c7bcbea2fa9c7677fc90185))
+* **bazel:**
+  * remove cyclic dependency by removing usage of assign_external_projects_to_separate_corpora config_setting flag (#6146) ([46275ee6](https://github.com/kythe/kythe/commit/46275ee670cab83d0c86ed3a5fbcfe826d386dac))
+* **java_indexer:**
+  * emit node kinds for jvm nodes (#6077) ([22726c4e](https://github.com/kythe/kythe/commit/22726c4ec9f911a2bb38c2284f2064eaff4641af))
+  * emit jvm refs for enum constants (#6103) ([b6c04946](https://github.com/kythe/kythe/commit/b6c049462ed9b8a5cca671c3d3e2a9b2fa9e71c3))
+* **cxx_indexer:**
+  * use flat_hash_map, not unordered_map; fix rehashing (#6083) ([cba4452d](https://github.com/kythe/kythe/commit/cba4452dc97187e1172d412961d7da494fa32182))
+  * clarify the use of llvm::dyn_cast on ClaimTokens (#6093) ([ae3434e7](https://github.com/kythe/kythe/commit/ae3434e763027ae747996ca2f6daaf0de71613fd))
+* **verifier_test:** ensure tools use the same configuration as indexer (#6113) ([d19f7f30](https://github.com/kythe/kythe/commit/d19f7f30d69c72bf673465a60c47d2303756cc40))
+* **extraction:** add proto rule to simple vnames config (#6068) ([28c16cff](https://github.com/kythe/kythe/commit/28c16cff1815c8980004d5192e02dcc07bd87762))
+
+#### Features
+* **go_indexer:**
+  * support flag field vars (#6064) ([df747be8](https://github.com/kythe/kythe/commit/df747be8fb4b999d813e7a57eb0c270a32f6ebe5))
+  * ref/writes for flag.Set invocations (#6085) ([ae1f3644](https://github.com/kythe/kythe/commit/ae1f36447dc41e74a2ec6b23e703b62ebd349e51))
+* **cxx_indexer:**
+  * experiment with variable initializer types (#6080) ([68671474](https://github.com/kythe/kythe/commit/68671474b72d5387f14fab7133cc29de75ebf86c))
+  * only emit flattened type representations once (#6082) ([a7f7af76](https://github.com/kythe/kythe/commit/a7f7af76587c9d9a0637ccdff9c5be90f62b3b62))
+  * look through the obvious casts for init types (#6081) ([49d98e25](https://github.com/kythe/kythe/commit/49d98e258bdaf930924d3b56ebd3ab77e467967c))
+  * emit symbols for extern C function defns (#6104) ([5b920720](https://github.com/kythe/kythe/commit/5b9207200c01371ddb29293cc3831d0b63f58faa))
+  * emit name nodes for flags (#6094) ([b1cc57f6](https://github.com/kythe/kythe/commit/b1cc57f64ac7833be44aace759211a98baf15d8c))
+* **typescript_indexer:**
+  * support xrefs in nested object literals (#6125) ([3a66d508](https://github.com/kythe/kythe/commit/3a66d508dbd7094139c14a745fc72058756dbb47))
+  * add flag to fail analysis on plugin error (#6079) ([65d37c97](https://github.com/kythe/kythe/commit/65d37c972697b201b8c6916811a7607a473ae568))
+* **java_indexer:**
+  * add names for native methods (#6108) ([f13abd65](https://github.com/kythe/kythe/commit/f13abd65999cdbce234fb189cc1e48a70184fe61))
+* **protobuf:** add types for protobuf service RPCs (#6109) ([9cd1af59](https://github.com/kythe/kythe/commit/9cd1af596659580469c0aa6a060b4c4a526235aa))
+* **tools:** --render_marked_source added to kythe docs cli (#6097) ([cc445fd5](https://github.com/kythe/kythe/commit/cc445fd57ca2d99322e35a65dd723bf1c2398c65))
+* **tooling:** entrystream support for textproto output (#6087) ([94e76f87](https://github.com/kythe/kythe/commit/94e76f8791f17a847eb497f78df10f19fbbfdb01))
+* define a Language schema enum (#6067) ([7206b16d](https://github.com/kythe/kythe/commit/7206b16d0a7618b1e346edda93cf63612ba2bd6b))
+* **build:** regenerate checked-in source artifacts in pre-commit (#6072) ([9db7d1c4](https://github.com/kythe/kythe/commit/9db7d1c4d50f9e8f1a0d827fb57215c40032a943))
+* **testing:** provide ability to save logs from indexers in verifier_test (#6075) ([97d1980e](https://github.com/kythe/kythe/commit/97d1980e425da3218d7d235edc38ce61d6286542))
+
+## [v0.0.67] - 2024-03-14
+
+#### Bug Fixes
+
+*   add jvm flag exports to release binaries (#6053) ([6f9d9886](https://github.com/kythe/kythe/commit/6f9d9886700003e5bdcced3a290678c080903692))
+*   don't use -1 for whole file offsets (#6043) ([ead8c9a4](https://github.com/kythe/kythe/commit/ead8c9a4230431998c20471cbd96daeaa0c02f52))
+* **bazel:**  alternate method of installing bazelisk in docker image (#6041) ([af62dcef](https://github.com/kythe/kythe/commit/af62dcef5b6bead597774c8868b6f11b8d4c3298))
+* **cxx_extractor:**  allow empty PathEntry flag values (#6050) ([923c25c1](https://github.com/kythe/kythe/commit/923c25c1b2aab72424cb64414ce7682fa3e4270a))
+* **go_indexer:**
+  *  avoid nil panic (#6046) ([6e140385](https://github.com/kythe/kythe/commit/6e140385b3e48f0d3f78c9b6572ad7549f618b03))
+  *  guard against missing package data (#6032) ([9772b080](https://github.com/kythe/kythe/commit/9772b0807ed88b40e606d667fff9a0a2589780b4))
+* **typescript_indexer:**  Fully log errors from plugins. (#6025) ([5c926f85](https://github.com/kythe/kythe/commit/5c926f855db0009530b13e66dc774ab915a69c8b))
+
+#### Features
+
+*   add FILE_DEFINES for files that generate files (#6044) ([9b672e45](https://github.com/kythe/kythe/commit/9b672e45b55654e13999928b4b0b74c72f9db12d))
+* **cxx_indexer:**
+  *  add an emit function for denotes edges (#6028) ([68170867](https://github.com/kythe/kythe/commit/681708671011b10c46090245f930d6cc3ba4bcdb))
+  *  add denotes edge kind (#6026) ([fbd57f81](https://github.com/kythe/kythe/commit/fbd57f8179eff73a2670ef5843b5bf177eb199f0))
+* **go_indexer:**
+  *  add doc link references (#6051) ([a40d6360](https://github.com/kythe/kythe/commit/a40d63601ae3db52303ef09ed513fb5d9ad51f65))
+  *  mark flag as deprecated if documented as such (#6048) ([b2e55a5f](https://github.com/kythe/kythe/commit/b2e55a5f5ae660b26513e23923308f53955e77c5))
+  *  add references to literal flag lookups (#6045) ([fb5addb7](https://github.com/kythe/kythe/commit/fb5addb7a8d70afc7362cae16b46a777c41b9239))
+  *  support vars denoting flags (#6037) ([02543b10](https://github.com/kythe/kythe/commit/02543b1070627e4bc123712a7ca5e9d7f84f267e))
+  *  add support for Func/Var flag constructors (#6033) ([01b4ba8d](https://github.com/kythe/kythe/commit/01b4ba8dbdfa473aaa8e1e685f7941d611dcf2e7))
+  *  extract flag constructors as config (#6031) ([043cd45f](https://github.com/kythe/kythe/commit/043cd45fd7f5126bbf9eb076c139f36230b15d32))
+  *  add experimental flag support (#6022) ([fecdc768](https://github.com/kythe/kythe/commit/fecdc768fcc2bd92e3ef18a8faf6b1fc6790b996))
+* **java:**  Switch to add_exports (#6049) ([f65a72d7](https://github.com/kythe/kythe/commit/f65a72d75bcf46fb90bba6a092208f8342623d01))
+* **schema:**  add denotes edge (#6030) ([bbf72650](https://github.com/kythe/kythe/commit/bbf72650dfa399b5fc7558244611b97d76d162ee))
+
+## [v0.0.66] - 2024-02-13
+
+#### Bug Fixes
+
+*   remove slog Context log calls (#6018) ([2589380b](https://github.com/kythe/kythe/commit/2589380b2cdf95da00d8030dd9605c3c15d500aa))
+
+#### Features
+
+* **java_indexer:**  support more metadata types (#6017) ([28cf6700](https://github.com/kythe/kythe/commit/28cf6700649bf4f98aa6b96a672e18b0192e8388))
+
+## [v0.0.65] - 2024-02-09
+
+#### Features
+
+* **kzip:**  add option for providing input list via file (#5970) ([052a0bb5](https://github.com/kythe/kythe/commit/052a0bb544087abdb456f18f7abd1db44747c9d7))
+
+## [v0.0.64] - 2024-01-24
+
+#### Bug Fixes
+
+*   tolerate missing boot_classpath (#5914) ([5145c7b9](https://github.com/kythe/kythe/commit/5145c7b99c0dd61b8bc2b77c2dbeed36e132835c))
+*   ensure lookup kinds are correct for resolved MarkedSource (#5789) ([c220dc75](https://github.com/kythe/kythe/commit/c220dc75bd1c5cb9367e0973d30de3e3ffd87a9e))
+*   c++ should handle post_child_text correctly (#5783) ([a92f67cc](https://github.com/kythe/kythe/commit/a92f67cc76a095e40d091d40272d589d0cb064cc))
+*   render BOX post_child_text if child is rendered (#5782) ([9b571ec3](https://github.com/kythe/kythe/commit/9b571ec3d5bb96281eb502cafa9f55611f108720))
+* **cxx_extractor:**
+  *  remove inapplicable CUDA driver and LLVM flags (#5913) ([80d78947](https://github.com/kythe/kythe/commit/80d78947efb899a4f81bd6ce8e2118e925f8f05e))
+  *  preserve order of exclusive action flags when munging args (#5912) ([5a765964](https://github.com/kythe/kythe/commit/5a76596426fbb0169af3843189bd7a4996eda439))
+  *  fix cc proto_lang_toolchain in release.BUILD (#5853) ([259e26c1](https://github.com/kythe/kythe/commit/259e26c1f932a709bdb6695ca338a8984d0d2690))
+  *  fix cc proto_lang_toolchain (#5843) ([44ffda5b](https://github.com/kythe/kythe/commit/44ffda5bd4711dd6629aa1f0a1ffc83c6c5867e4))
+* **cxx_indexer:**
+  *  use correct definition anchor spans for lambdas (#5890) ([3d0a2d92](https://github.com/kythe/kythe/commit/3d0a2d92576cd24a72774f4e39c0c6317e8e1686))
+  *  address issue #5935 (when aliasing is on) (#5937) ([1ac7b163](https://github.com/kythe/kythe/commit/1ac7b163e87d03131c8dd52d7f24ac21ba21a7e7))
+  *  document issue #5935 (using template-name) (#5936) ([7bb8054d](https://github.com/kythe/kythe/commit/7bb8054d7e117a6783dad2011cac5d9fa43f221e))
+  *  refactor IndexVFS to handle pragma_once (#5927) ([321efb37](https://github.com/kythe/kythe/commit/321efb372bbac4afab8ef2a61a87f202e8356c9a))
+  *  avoid crashing in dependent specialization w/o written arguments (#5903) ([205cb366](https://github.com/kythe/kythe/commit/205cb366451a892b70d04a1b8def084dd82a3b2b))
+  *  use operator symbols for markedsource; add flag (#5823) ([5105aa0c](https://github.com/kythe/kythe/commit/5105aa0cfb42c7c1f53bd44f7405fbf7b8be3d19))
+  *  properly handle dependent using decl names  (#5808) ([7864f66d](https://github.com/kythe/kythe/commit/7864f66db0c9cbb787b2cc97957f527bb1fb7658))
+* **extractor:**  fix Dockerfile and extraction script (#5774) ([18c44b66](https://github.com/kythe/kythe/commit/18c44b668a7f5ecf9d1795eefdcdde9a9958fc19))
+* **go_indexer:**
+  *  ignore unresolved C imports (#5900) ([ff79ac58](https://github.com/kythe/kythe/commit/ff79ac5800c81a57dc3dfd3f96242624112c7be6))
+  *  mark variadics in all contexts (#5845) ([b662dce7](https://github.com/kythe/kythe/commit/b662dce74c950be8022ae026cb00000571856f85))
+  *  use simple type name for constraints (#5844) ([23ec6cb7](https://github.com/kythe/kythe/commit/23ec6cb7dd9da98c76db9a8e6a7f9d3adc2c6499))
+  *  handle more type name kinds (#5822) ([ae7544ae](https://github.com/kythe/kythe/commit/ae7544ae06ecd5ce4c96813580106d7ebfd1f36e))
+  *  handle named return type signatures (#5820) ([07a1cd37](https://github.com/kythe/kythe/commit/07a1cd37b64adaa2ff58eda8f10cec18349dded8))
+  *  detect top-level when using file-level scopes (#5817) ([afdcec6a](https://github.com/kythe/kythe/commit/afdcec6a881c967634144f9f19e7dd59507f7649))
+  *  fix builtin type references (#5812) ([78888127](https://github.com/kythe/kythe/commit/7888812784e796dbfbe1672a1aa1e9ac4c3cf8e0))
+  *  emit tbuiltin nodes for special builtin pkg (#5810) ([a0c5592f](https://github.com/kythe/kythe/commit/a0c5592f5ac755bb8da4ec215869a80f9e040ff8))
+  *  restore parens to recv MarkedSource (#5786) ([9f328b2e](https://github.com/kythe/kythe/commit/9f328b2e1f62ae8bec8addeeea39e11a10320a76))
+  *  use LOOKUP_BY_PARAM for method recv (#5781) ([69fb2aee](https://github.com/kythe/kythe/commit/69fb2aeefafaa9647c626557f2b0d03fcb02aa70))
+* **java_indexer:**
+  *  add basic MarkedSource for wildcards (#5897) ([3ca64733](https://github.com/kythe/kythe/commit/3ca647331d10e622ab36467a02ff8c75f7b7ac61))
+  *  fix ctor/generic signatures (#5814) ([e03e06f3](https://github.com/kythe/kythe/commit/e03e06f391b22be817e4db4513bcb79dba0fbf98))
+* **proto_indexer:**
+  *  use modern presence check (#5856) ([9c7b2dd6](https://github.com/kythe/kythe/commit/9c7b2dd6b606f08e785c1b59a590f74fdd363686))
+  *  handle proto3 presence in signatures (#5855) ([5a8aab9d](https://github.com/kythe/kythe/commit/5a8aab9dafb379a8c783b9651026a4498db3290c))
+  *  handle map types in signatures (#5839) ([b3e3ff6e](https://github.com/kythe/kythe/commit/b3e3ff6e058d638824674a611c040fc8ccf7713b))
+* **rust_common:**  finish removing rust (#5803) ([87ae5e2b](https://github.com/kythe/kythe/commit/87ae5e2bef23dba2475b604b97f6b0488cae60fb))
+* **schema:**
+  *  define anchors with [0,0) spans to refer to entire files (#5984) ([a182fa9f](https://github.com/kythe/kythe/commit/a182fa9fa2b099c30d7fac9af941611d21f22861))
+  *  remove ref/call/thunk (#5874) ([ba7bad37](https://github.com/kythe/kythe/commit/ba7bad374fe487e8410ed7f4bb0956b0aad37415))
+* **serving:**  understand markdown escapes for spacing (#5846) ([26c7439d](https://github.com/kythe/kythe/commit/26c7439d11f70d2296f19318cce3c27162ec6132))
+* **typescript:**  always return values, even if they're undefined (#5957) ([fd6d1b53](https://github.com/kythe/kythe/commit/fd6d1b53b0ce26284c46f726cb1ac869d61f2e11))
+* **typescript_indexer:**
+  *  add ... to vararg parameters (#5842) ([608d1cb9](https://github.com/kythe/kythe/commit/608d1cb98249396694716a1a9087413e850b047e))
+  *  improve handling of anonymous functions (#5795) ([26521394](https://github.com/kythe/kythe/commit/265213942771f05ef36b13b3cafae242edae23b8))
+* **verifier:**
+  *  use the fast solver by default. (#5972) ([4261c854](https://github.com/kythe/kythe/commit/4261c85428b0ae64cb2e2875776e9b058bf44578))
+  *  give more useful diagnostics during recovery (#5971) ([922b4d38](https://github.com/kythe/kythe/commit/922b4d382e8ce0c9339d624779e1b2f31aaa177a))
+  *  provide reasonable default corpus/path values (#5943) ([f358c2e2](https://github.com/kythe/kythe/commit/f358c2e2a3a38acf50ac0286a176300e5b126fe6))
+  *  request larger stack size for new solver (#5883) ([4708608b](https://github.com/kythe/kythe/commit/4708608bf77eba10fdc284e87d01e4955709a1b5))
+  *  various fixes for new solver (#5830) ([a40be3e3](https://github.com/kythe/kythe/commit/a40be3e3eac6411dfef97fc342cf09cdcc6be605))
+  *  flush stdout before printing verifier results (#5788) ([8ca60068](https://github.com/kythe/kythe/commit/8ca60068bcb84833f402370655eceb69e7ab324a))
+
+#### Features
+
+*   include canonical node info for identifier service (#5917) ([3db77399](https://github.com/kythe/kythe/commit/3db77399c89a5ef07cba26abc30d40d0a4024a7a))
+*   allow MarkedSource to remove itself from includes (#5873) ([0d4624e4](https://github.com/kythe/kythe/commit/0d4624e4e86f8ac7ba5e18e5518941cb6218d86e))
+*   allow deeper nested MarkedSource rendering (#5862) ([daf1c0b3](https://github.com/kythe/kythe/commit/daf1c0b315fc63fc1aa9b409e83e74a1b61c84fc))
+*   add option to resolve code facts for verifier (#5790) ([75dd26bc](https://github.com/kythe/kythe/commit/75dd26bcaf7d82d8e23a4320e57d352cc07c6eba))
+* **api:**
+  *  mark speculative xrefs (#5959) ([096ed9df](https://github.com/kythe/kythe/commit/096ed9dfcab290759e033fff5ab57f95543e2ffc))
+  *  support sending CU digest along with AnalysisRequest (#5796) ([783263dc](https://github.com/kythe/kythe/commit/783263dc5f2203bf01af9e140b9729704b52ba90))
+  *  support MarkedSource MODIFIER type (#5778) ([721031fc](https://github.com/kythe/kythe/commit/721031fc059b7cf36630cbc07ec1c86957ff3fe0))
+* **cxx:**  add --emit_anchor_scopes and implement childof edges for lambdas (#5901) ([097f7c42](https://github.com/kythe/kythe/commit/097f7c42f55efb3aff3e13531a0e3b7928cd5908))
+* **cxx_extractor:**  add ability to canonicalize VName paths per-file (#5909) ([9f9bc455](https://github.com/kythe/kythe/commit/9f9bc4550d60dd280409d336e66691ef9748c939))
+* **cxx_indexer:**
+  *  allow skipping analysis of files which match a regex (#5962) ([a2f9d892](https://github.com/kythe/kythe/commit/a2f9d892271a107074f5cbe4fa33e4de445a77b7))
+  *  Index dependent template specialization types. (#5863) ([3a8d7b9f](https://github.com/kythe/kythe/commit/3a8d7b9f660b565152a27b799ecf083148a57c1b))
+  *  support decayed types (#5852) ([77ff9e48](https://github.com/kythe/kythe/commit/77ff9e485bfe053f0c740894ea448e29f356c6dd))
+* **dev:**  add aspect-based implementation of extra actions for tests (#5923) ([54f6198b](https://github.com/kythe/kythe/commit/54f6198b1ac76cd9ae9abc460677b626a53ad982))
+* **extraction:**  allow using a capturing group with generic bazel extractor (#5973) ([7881f8fb](https://github.com/kythe/kythe/commit/7881f8fb2d7ddba79f9291c5e4b0a328f9a1a433))
+* **extractor:**  add a flag for filtering on input file size (#5768) ([be23cc2b](https://github.com/kythe/kythe/commit/be23cc2bf0ee4f95ec722f03b48cfd05bb2de2cf))
+* **go_indexer:**
+  *  add subkinds to variable nodes (#5888) ([8b4773db](https://github.com/kythe/kythe/commit/8b4773db4daff23fe3beabde5f2143eecead8be2))
+  *  link type parameter constraints (#5884) ([da52730b](https://github.com/kythe/kythe/commit/da52730b539800d3e9294eac231eebd2e509e070))
+  *  add anchor scope to func literals (#5840) ([f3c56bcb](https://github.com/kythe/kythe/commit/f3c56bcb60390d59d2ba6daf1229d2425ae89d52))
+  *  add type args to return types (#5836) ([aca6a8af](https://github.com/kythe/kythe/commit/aca6a8afbf8647068f511124fc4c67c739aa2d38))
+  *  add constraints to generic signatures (#5835) ([e07111f0](https://github.com/kythe/kythe/commit/e07111f0e9e942e06bab38679870051dfcd877f6))
+  *  link return vars (#5821) ([8f5d2864](https://github.com/kythe/kythe/commit/8f5d2864b5454b812a6607c5d722e7d198f82eb9))
+* **java_indexer:**  add method type parameters to MarkedSource (#5882) ([dc4b0053](https://github.com/kythe/kythe/commit/dc4b00536e7a1b9e2f405a914350282c8b83f08f))
+* **proto_indexer:**
+  *  link the rest of the MarkedSource (#5866) ([7835faa3](https://github.com/kythe/kythe/commit/7835faa3408fd21da8278160f6e07acc018ce78e))
+  *  link proto field types in MarkedSource (#5857) ([1c0347d4](https://github.com/kythe/kythe/commit/1c0347d4ab6b279864c13ceca27fa760a7708724))
+  *  link proto field names in signatures (#5847) ([a05f442b](https://github.com/kythe/kythe/commit/a05f442b7f0cff9e6d70b1497211db1d559b9c63))
+  *  add labels to field MarkedSource (#5838) ([1552f67c](https://github.com/kythe/kythe/commit/1552f67c3968a4ea29d0cafe15d11c825e899ab0))
+  *  add types to field MarkedSource (#5837) ([71b50385](https://github.com/kythe/kythe/commit/71b50385ebbc1cdea746b76a0d1943f770943f6c))
+  *  add kinds to signatures (#5827) ([758a73d2](https://github.com/kythe/kythe/commit/758a73d2efe597ac3814df523b049737c1d8369d))
+* **schema:**
+  *  add /thunk edges and clean up ref/writes (#5848) ([07c418fa](https://github.com/kythe/kythe/commit/07c418fa3a8579b18a3f98f18de981cb6e2bef19))
+  *  add narrows edge (#5773) ([52eab883](https://github.com/kythe/kythe/commit/52eab883c61118fb8fb168b954facbf3040caaab))
+* **service:**  support searching by unit corpus in KCD (#5770) ([c487141c](https://github.com/kythe/kythe/commit/c487141c987ef8d3becf179523e59765227e3345))
+* **serving:**
+  *  render MODIFIERs in signatures (#5819) ([f9d97b29](https://github.com/kythe/kythe/commit/f9d97b299d6a5b2ebd224560b2ec506064dc4ace))
+  *  return estimates for all ref edge subkinds (#5784) ([a9402c76](https://github.com/kythe/kythe/commit/a9402c7643ac5ac1b25dddd76fa3b9b7577f7f64))
+  *  allow corpus specific includes filters (#5767) ([29ddcf9f](https://github.com/kythe/kythe/commit/29ddcf9fa70b7aa4e8b49679f1aea008e872def6))
+* **verifier:**
+  *  support graphviz output with the fast solver (#5967) ([0f546f6e](https://github.com/kythe/kythe/commit/0f546f6e9416d1ecbb1a584c1c6e66bf480a3e3d))
+  *  print inspections with fast solver (#5960) ([cf876c37](https://github.com/kythe/kythe/commit/cf876c376c95a7846c04c23f885e443e5db7532c))
+  *  warn on and allow specifying default file corpora (#5933) ([3c922e0a](https://github.com/kythe/kythe/commit/3c922e0abe5c9a71ca482eddf878fcb9b2004415))
+  *  support error recovery with the fast solver (#5915) ([6584e2fc](https://github.com/kythe/kythe/commit/6584e2fcb5bfe11c4f38ff44a152f7120efc76d3))
+  *  Print phase time information from the verifier. (#5859) ([4ec79a57](https://github.com/kythe/kythe/commit/4ec79a57c676ac07070d3008887363d96f4df776))
+
+## [v0.0.63] - 2023-07-18
+
+#### Bug Fixes
+
+* **cxx_indexer:**
+  *  don't create a temporary and use its address for usrs (#5720) ([aefac5c6](https://github.com/kythe/kythe/commit/aefac5c66aede4a1a877e7e2644374688331df6a))
+  *  ensure the working directory is absolute (#5709) ([df7353e3](https://github.com/kythe/kythe/commit/df7353e3230e97e9266b6f64b59b231503f9072c))
+  *  ensure the working directory is absolute (#5708) ([d73735b8](https://github.com/kythe/kythe/commit/d73735b813b12347ae23557b00271d409cd6e299))
+* **go_indexer:**  visit anon members in struct type (#5734) ([8bec7289](https://github.com/kythe/kythe/commit/8bec72890e315f5368276163ea5fb6c1e5da05f7))
+* **proto_verifier_test:**  remove proto static reflection option (#5702) ([ce9303db](https://github.com/kythe/kythe/commit/ce9303dbbb7aca6b842fdcf5ac8beccfcf70c358))
+* **serving:**  scan all identifier matches for reply (#5735) ([47b5f65c](https://github.com/kythe/kythe/commit/47b5f65c7da33fe68a88a86adf8a6ce63d5da231))
+* **typescript_indexer:**
+  *  emit  edges for methods that are 2+ levels away (#5725) ([580ced87](https://github.com/kythe/kythe/commit/580ced87085d90b07bcbc009aba1770528b7fc03))
+  *  improve childof coverage (#5727) ([1ad4c6dd](https://github.com/kythe/kythe/commit/1ad4c6dd42b84521558906f922ffe65a4f8b6c1a))
+  *  limit ref/call spans to identifiers (#5695) ([2eedf34f](https://github.com/kythe/kythe/commit/2eedf34f736b9135063cd20b3f7883519f0d2a5a))
+
+#### Features
+
+* **cc_proto_verifier_test:**  optionally enable proto static reflection (#5700) ([d352a0bc](https://github.com/kythe/kythe/commit/d352a0bc881ca1b2188587718f5353ecb08fadd8))
+* **cxx_indexer:**
+  *  add GraphObserver.recordDiagnostic() (#5730) ([49f57689](https://github.com/kythe/kythe/commit/49f576899d85adfbfe56228bed4ceb14e4c00291))
+  *  provide InspectDeclRef access to Expr (#5726) ([d2258d15](https://github.com/kythe/kythe/commit/d2258d15ae4737972fe32ed4cc0f1af9d9898813))
+  *  optionally use the compilation unit corpus for USRs (#5710) ([22798b44](https://github.com/kythe/kythe/commit/22798b444a2636cb4917487cd2e92d228d37898d))
+* **go_indexer:**
+  *  support custom GeneratedCodeInfo edges (#5740) ([79aba518](https://github.com/kythe/kythe/commit/79aba518600520def93a81ad61f663a680a894ab))
+  *  add --emit_ref_call_over_identifier flag (#5692) ([8cd5f34e](https://github.com/kythe/kythe/commit/8cd5f34e1c50846c1938f8c4810f2c50146db69e))
+* **java_indexer:**  add --emit_ref_call_over_identifier flag (#5693) ([7e74fea3](https://github.com/kythe/kythe/commit/7e74fea3067add289c844ec6bf36affbe9e69101))
+* **proto_verifier_test:**  add cc_deps and cc_indexer parameters ([133d3790](https://github.com/kythe/kythe/commit/133d3790d2b8002bbb2013c5d5660e804bcd67ca))
+* **typescript:**  add semantic/generated fact name (#5736) ([e1433ba3](https://github.com/kythe/kythe/commit/e1433ba322729830a91cfbd1f9d1c538e6e1034d))
+
+## [v0.0.62] - 2023-06-07
+
+#### Features
+
+*   add InspectFunctionDecl callback to LibrarySupport (#5596) ([5a9af6e3](https://github.com/kythe/kythe/commit/5a9af6e371e0e38d6de86d11b0a4dc8fbf956b26))
+*   add KytheURI#toCorpusPath() (#5592) ([eb169e6d](https://github.com/kythe/kythe/commit/eb169e6d60c9167ee9884c172654ff5c3f1c21af))
+* **api:**
+  *  support returning scopes for xrefs (#5595) ([5e3377ef](https://github.com/kythe/kythe/commit/5e3377ef95a9d617e30a47d4c2cda2dbbfd89053))
+  *  also filter directories containing only textless entries (#5582) ([bd0277bb](https://github.com/kythe/kythe/commit/bd0277bbd5dd67cdd749e3ae0ebe3cb6e0d59b01))
+  *  guard returning file entries with missing text (#5580) ([3ec5f315](https://github.com/kythe/kythe/commit/3ec5f315c6102b010fadeab6d7675f1cb2abcf27))
+* **build:**  add and use permissive wrapper for select.with_or (#5587) ([45379cc0](https://github.com/kythe/kythe/commit/45379cc048123ab3295b2d6b9b8b2b909b667a0e))
+* **cli:**
+  *  show kind for xref sites (#5607) ([c0b848bb](https://github.com/kythe/kythe/commit/c0b848bb2250df78981c902b09aec45a3a78518c))
+  *  add flag for xref semantic scopes (#5602) ([e2de9576](https://github.com/kythe/kythe/commit/e2de95767307403c3c7accc40df5a68b50af91c2))
+* **cxx_common:**
+  *  optionally dispose of unselected filesets (#5689) ([649d1560](https://github.com/kythe/kythe/commit/649d156089c65b0cd9ba844c57b267eceea49bfd))
+  *  use a more compact serialization and in-memory format for selection (#5652) ([2b14f986](https://github.com/kythe/kythe/commit/2b14f986dd8c56a0e3bb7df5fbaec3c86bdca239))
+* **cxx_indexer:**
+  *  optionally set protobuf aliases as writes (#5636) ([0efe65e1](https://github.com/kythe/kythe/commit/0efe65e1d457bbe3bb89e1b1c1c4741af11cf8f6))
+  *  support kTakeAlias semantics in simple alias exprs (#5541) ([5719e42c](https://github.com/kythe/kythe/commit/5719e42c6d0ad9d1328671da4f165eaa6590dae0))
+  *  support simple aliases to declrefexprs (#5538) ([b0561485](https://github.com/kythe/kythe/commit/b0561485727cc4f2feee8b0a5f6911e255096834))
+  *  add alias-taking semantic (#5540) ([0155c524](https://github.com/kythe/kythe/commit/0155c524ee22944ff4088f4e8cbe66a90ce9a4f0))
+  *  prepare to eliminate simple aliases (#5535) ([12de694d](https://github.com/kythe/kythe/commit/12de694db74921b019757baec1f93403e1a0beaa))
+* **go_indexer:**
+  *  add support for using file as top-level caller (#5637) ([da6a8bdd](https://github.com/kythe/kythe/commit/da6a8bdd96395015b58bfc392816addc359ab528))
+  *  render context namespaces recursively in RenderQualifiedName. (#5608) ([bd44dd42](https://github.com/kythe/kythe/commit/bd44dd420fc3713f87a711eb5b6277d084a05148))
+  *  support metadata semantic types (#5598) ([e79d8ee9](https://github.com/kythe/kythe/commit/e79d8ee955b63bd1f0a1b12b894b61fdd0773108))
+  *  struct refs in composite literals should be writes (#5606) ([b8e27f30](https://github.com/kythe/kythe/commit/b8e27f3080aa13b2d63f8427b959c4cc607de207))
+* **go_tools:**  allow sorting units before files on merge (#5562) ([e199abd5](https://github.com/kythe/kythe/commit/e199abd5c93663379d5587c9b5b42d5728444f99))
+* **java:**  add semantic/generated=set facts for annotated proto accessors (#5629) ([cfb0fc78](https://github.com/kythe/kythe/commit/cfb0fc78698f757c81be7bb1257538b259a76e47))
+* **java_common:**  update shims to more clearly indicated supported version (#5590) ([d418a5d6](https://github.com/kythe/kythe/commit/d418a5d66e7bb01bfb69c990828fd8f81d046e50))
+* **java_indexer:**
+  *  try to handle unsupported -source flags (#5668) ([5e8ab468](https://github.com/kythe/kythe/commit/5e8ab468bc81f1e92c0a662d08eb48e1b85353ba))
+  *  add set semantic to AutoValue setters (#5661) ([8cbd40c1](https://github.com/kythe/kythe/commit/8cbd40c11a5d737fc1ada3fa191e66ab0603e39c))
+  *  use file as scope for top-level anchors (#5639) ([f9202daf](https://github.com/kythe/kythe/commit/f9202dafeca6312b8933b561a6e6038ad409f506))
+  *  mark this/super ctor calls as direct (#5611) ([656d67bc](https://github.com/kythe/kythe/commit/656d67bcca2f08f0b33b8d2551393f019de50777))
+  *  mark ctor calls as direct (#5610) ([7d006726](https://github.com/kythe/kythe/commit/7d006726256e3b495564a38c75dc51d930a39c3a))
+  *  add java20 shim for java indexer (#5583) ([bf8a2798](https://github.com/kythe/kythe/commit/bf8a279843aca5302ea1efdd55dbed2d366bc34d))
+* **objc_indexer:**  output usr for ObjCMethodDecl (#5564) ([96304cca](https://github.com/kythe/kythe/commit/96304cca6a8d868686cc982711068c9db11e3bbd))
+* **schema:**
+  *  add semantic/generated fact (#5628) ([4101e315](https://github.com/kythe/kythe/commit/4101e3159ce16240fa5333a8b93c7254c37d6596))
+  *  add ref/writes (#5581) ([33ef4d5e](https://github.com/kythe/kythe/commit/33ef4d5eb60117acd6e5f3ab64b893dcf025211c))
+* **serving:**  support scoped cross-references (#5530) ([2387903e](https://github.com/kythe/kythe/commit/2387903e66fd9f52346e3234a981e9dd7a74ca82))
+* **textproto_indexer:**  mark fields as ref/writes (#5679) ([e30b5e83](https://github.com/kythe/kythe/commit/e30b5e8347f9dacb2a49089048eae3098d69f17a))
+* **typescript:**
+  *  merge constructor nodes (#5609) ([01de9808](https://github.com/kythe/kythe/commit/01de9808b3163e98b6e8446aef871c590040c07b))
+  *  use unique vnames for anonymous functions  (#5593) ([7ef0880b](https://github.com/kythe/kythe/commit/7ef0880ba487004695d46e76d5d4439abc792df7))
+  *  emit marked sources for functions, classes and enums (#5578) ([02c7c215](https://github.com/kythe/kythe/commit/02c7c2153dcdeb816784b9c63f0055510a4d7dde))
+  *  add ref/id edges for shorthand properties (#5569) ([14d3c9d7](https://github.com/kythe/kythe/commit/14d3c9d7c1236fc5380ee2e0d0e68be140b918fd))
+  *  add flag follow aliases when emitting refs (#5563) ([18c2093d](https://github.com/kythe/kythe/commit/18c2093d985c4e062d215a80a35946e2fd4cbdad))
+  *  emit code nodes for tsx attributes (#5561) ([91a76289](https://github.com/kythe/kythe/commit/91a76289886a086e05474dc4ec7c071242119269))
+  *  launch edge reassignment for import statements (#5560) ([a66de2f9](https://github.com/kythe/kythe/commit/a66de2f9e1ab49f6e8e0537277bcefa8e8883167))
+* **typescript_indexer:**
+  *  improve marked source CONTEXT nodes (#5642) ([a3904172](https://github.com/kythe/kythe/commit/a390417255ebfcd6c053254cf910e539042792e7))
+  *  add flag to emit zero-width spans for module nodes (#5632) ([dfa25327](https://github.com/kythe/kythe/commit/dfa25327cd8185bbb28cedf4360ac89fbabfc008))
+  *  handle type nodes when emitting ref/id from object bindings (#5631) ([d282495d](https://github.com/kythe/kythe/commit/d282495deb66df2c79ff96b2a041b6ca125a00e5))
+  *  clean up unused options and rename allFiles to rootFiles for clarity (#5533) ([e88d5c69](https://github.com/kythe/kythe/commit/e88d5c694093e2f4c0cc1163043b2af795fbb33a))
+  *  add ref/id from constructor calls to class nodes (#5534) ([fbf4be95](https://github.com/kythe/kythe/commit/fbf4be95c8e0078d245e2fb9ac6ee6da47551860))
+  *  implement ref inlining for imported symbols (#5527) ([ff8bbd15](https://github.com/kythe/kythe/commit/ff8bbd15e5a34bedfc7a234bd846afe63bcc9018))
+  *  support dynamic imports (ref to modules only) (#5514) ([827dc161](https://github.com/kythe/kythe/commit/827dc161ee9c3a6f9aae5dfc749a5ec1c6785fd6))
+* **verifier:**
+  *  naive implementation of groups for new solver (#5680) ([7e3665d1](https://github.com/kythe/kythe/commit/7e3665d112da401b6f45de65381ec75b690803b1))
+  *  add a relation for anchors (#5667) ([30b40393](https://github.com/kythe/kythe/commit/30b40393c13b69a69ae19d853948ac3c0aacc353))
+  *  begin supporting some forms (#5665) ([91d7cd04](https://github.com/kythe/kythe/commit/91d7cd04ca03aa45e573fa7dbbd22b44c8a2a6d9))
+  *  unknot some deps and call into the fast solver (#5662) ([157e8d1d](https://github.com/kythe/kythe/commit/157e8d1dac67364bd4b5955d8bab2ae0d7ddb489))
+  *  generate and run an empty but typed program (#5659) ([67a19fbb](https://github.com/kythe/kythe/commit/67a19fbbe0c2c4155d1ec3d724ffb15bb714abc2))
+
+#### Bug Fixes
+
+*   removal license export (#5634) ([cc8f9c37](https://github.com/kythe/kythe/commit/cc8f9c37466a477813a496a396877f6c66c19fea))
+*   fix reversed op (#5599) ([d838ac67](https://github.com/kythe/kythe/commit/d838ac6761c5f9253f0a658d9d71214ff6b4aa99))
+* **api:**  explicitly mark source_text optional ∵ File.text is optional (#5666) ([c1a4536b](https://github.com/kythe/kythe/commit/c1a4536b800fbbac2284b8068e3e81495f40000e))
+* **cxx_common:**
+  *  fix and test minor issue with fileset id 0 (#5655) ([b65dfcf1](https://github.com/kythe/kythe/commit/b65dfcf172c0c2b2249d66106d393ad23b27327f))
+  *  select artifacts from failed targets (#5644) ([2bae2d54](https://github.com/kythe/kythe/commit/2bae2d54c55fb05dd1228ba030823a12a91a6ede))
+  *  attempt to reduce memory usage of bazel artifact selector (#5638) ([3d737714](https://github.com/kythe/kythe/commit/3d7377146c863d8fe73219292f91a28acc3a4db9))
+* **cxx_extractor:**
+  *  compile fix when absl::string_view != std::string_view (#5588) ([0389aa8e](https://github.com/kythe/kythe/commit/0389aa8e0dd94aa50e60269c5cec2e5f6403cc55))
+  *  don't validate pchs (#5571) ([de71b9cb](https://github.com/kythe/kythe/commit/de71b9cb3943782b622ff1cc694e72881ee6d07e), breaks [#](https://github.com/kythe/kythe/issues/))
+  *  don't crash when modules are on (#5554) ([a18df6c8](https://github.com/kythe/kythe/commit/a18df6c88b5cbcd5f812e49e6f9542cd85b8a124))
+  *  the main source file should be marked always_process (#5537) ([ad0966ba](https://github.com/kythe/kythe/commit/ad0966ba8320b95dac81591b2b88168ef7dd7895))
+* **cxx_indexer:**
+  *  mark DesignatedInitExprs as writes (#5616) ([714358f4](https://github.com/kythe/kythe/commit/714358f4652fa64f2188fef9ed35bebf377ef05e))
+  *  find vnames for pch/pcm files (const edition) (#5614) ([152f9f67](https://github.com/kythe/kythe/commit/152f9f67898ebf32a7b94962c5944e080434dc51))
+  *  find vnames for pch/pcm files (#5612) ([33b2c6e1](https://github.com/kythe/kythe/commit/33b2c6e192b8e5c351fae75130f792d3530b072b))
+  *  don't validate pchs (#5573) ([a0393adc](https://github.com/kythe/kythe/commit/a0393adcc58578a1c1e7d0fbce8f506c0dc95d47))
+  *  emit proper marked source for macro-renamed functions (#5542) ([89612794](https://github.com/kythe/kythe/commit/896127944be49ab5d6fb83af901fb445145a70bf))
+* **cxx_verifier:**  ensure primitive members are always initialized (#5640) ([1625b495](https://github.com/kythe/kythe/commit/1625b495d7554a801512a491e32cdc65279a2e2c))
+* **go:**
+  *  use %s to format protos in kzip validation error messages (#5674) ([7ed207bf](https://github.com/kythe/kythe/commit/7ed207bff79871081f8bc38bb212c025637530cd))
+  *  avoid formatting protos via "%v" for non-debug uses (#5673) ([76110120](https://github.com/kythe/kythe/commit/761101206f1201e8f3d7480b6ec1128186435fc3))
+* **go_indexer:**
+  *  do not mark map keys as ref/writes (#5641) ([f34d984b](https://github.com/kythe/kythe/commit/f34d984bfee3bd6522f0bb6af499729c064b1352))
+  *  don't strip extensions from import paths (#5568) ([ac48a010](https://github.com/kythe/kythe/commit/ac48a010abf2e82bad636457788fdd40676ca54c))
+* **java:**  explicitly define toolchains for the Java versions we support (#5615) ([05fe9086](https://github.com/kythe/kythe/commit/05fe9086c8e81de292f541d85bb7d6739e239ee9))
+* **presubmit:**  omit manual targets from both input and output sets (#5574) ([d12a0ba3](https://github.com/kythe/kythe/commit/d12a0ba32c0c64f1d53ca394c8683be921d1f58d))
+* **proto_indexer:**  use extends relation for proto field extensions (#5521) ([d9213d32](https://github.com/kythe/kythe/commit/d9213d320940392969de9fd7dc8dfca4d4ec509e))
+* **serving:**
+  *  cleanup/fix crossrefs paging (#5600) ([c2314b7a](https://github.com/kythe/kythe/commit/c2314b7af5f2358e46356a42b6fc39ff8ac6afe2))
+  *  don't checklines in diffmatchpatch (#5557) ([10beac0a](https://github.com/kythe/kythe/commit/10beac0a5d8bcb79cf2abe896196d7b7607adf84))
+* **tools:**  use vfs.Stat instead of os.Stat in kzip tool (#5566) ([e27ce6b2](https://github.com/kythe/kythe/commit/e27ce6b2d63a8c2e96013b734d845bc8a7c154ae))
+* **typescript:**  emit code blocks for interface properties and fix TODO (#5513) ([8efd1273](https://github.com/kythe/kythe/commit/8efd1273c594053935719b5e45152a21f30f9123))
+* **typescript_indexer:**
+  *  remove console.log left from debugging (#5622) ([185f8e16](https://github.com/kythe/kythe/commit/185f8e16df8df261b72da61b9c986368733116fc))
+  *  fix context in marked sources (#5620) ([1e2c50c4](https://github.com/kythe/kythe/commit/1e2c50c4d66a0c7d0222f39ad376049445ac220c))
+  *  fix import xref from .ts to .tsx file (#5549) ([a657cc88](https://github.com/kythe/kythe/commit/a657cc88cd4a8f8c4c3611937be21baa626586b0))
+* **verifier:**
+  *  flat_hash_map + fix spurious warning (#5671) ([eaf9db8b](https://github.com/kythe/kythe/commit/eaf9db8bfc643d092fd9d3571277a3ebef7b15bb))
+  *  depend on absl optional library (#5670) ([beb2f6ad](https://github.com/kythe/kythe/commit/beb2f6ad593a24d83f1aa8bbfe9ac87bd94eceea))
+  *  parameterize tests over solver (#5645) ([763a65b9](https://github.com/kythe/kythe/commit/763a65b96d23f5136dbfba17b6db817565d75202))
+* **xrefs_filter:**  properly merge page lists that represent allPages (#5624) ([6fe9ba39](https://github.com/kythe/kythe/commit/6fe9ba391bba3eecfcc74aa514a54c02e03367d2))
+
+#### Breaking Changes
+
+* **cxx_extractor:**  don't validate pchs (#5571) ([de71b9cb](https://github.com/kythe/kythe/commit/de71b9cb3943782b622ff1cc694e72881ee6d07e), breaks [#](https://github.com/kythe/kythe/issues/))
+
+## [v0.0.61] - 2023-01-19
+
+#### Bug Fixes
+
+*   include TsProject as a typescript rule mnemonic for extraction extra action (#5504) ([a80fd84d](https://github.com/kythe/kythe/commit/a80fd84d1bae5039d94689c1015e0765f1427f86))
+*   correctly patch zero-width spans (#5442) ([2f5811d9](https://github.com/kythe/kythe/commit/2f5811d9bac67edaf0999af8f95f3b2f0cd2ec35))
+*   passthrough nil Spans without work (#5438) ([a8f3b96e](https://github.com/kythe/kythe/commit/a8f3b96e05c2398493b5253ba38e9f25296a99b0))
+*   guard against nil patcher from errors (#5395) ([9a4281bf](https://github.com/kythe/kythe/commit/9a4281bff0daf08bafb8736e1e8b5d657cd666d8))
+*   log patcher errors; continue (#5394) ([cbec0f7c](https://github.com/kythe/kythe/commit/cbec0f7c970a9e59c81675f6122ded5550695fb5))
+*   update gofmt path in pre-commit docker image (#5376) ([837db591](https://github.com/kythe/kythe/commit/837db5914f54f4377f8a6c50d972b02af8e5d16b))
+* **api:**  only count xrefs cut by CorpusPathFilters (#5451) ([781cbf2b](https://github.com/kythe/kythe/commit/781cbf2b930125b3cfc3cfaca439bea81d93c936))
+* **cxx:**  use canonical clang include path (#5468) ([8b5bc95c](https://github.com/kythe/kythe/commit/8b5bc95c4cdb9a03a0dfeb13f1e1639f73ab19cd))
+* **cxx_common:**  address bug with zero sized files (#5445) ([6a1dcbfc](https://github.com/kythe/kythe/commit/6a1dcbfc3be19d04076869fa1b6280903df3f4e1))
+* **cxx_indexer:**
+  *  remove unnecessary precondition (#5461) ([1c481fc0](https://github.com/kythe/kythe/commit/1c481fc07b34c4fb0bc3b6915690d8b86df2e7cb))
+  *  reintroduce dereferencing to BuildNodeIdForTemplateName (#5383) ([7f6be7a2](https://github.com/kythe/kythe/commit/7f6be7a2de04239c7152d013d75bf210c457a463))
+  *  dereference member templates (#5381) ([a57e0fdb](https://github.com/kythe/kythe/commit/a57e0fdbbaa2ae699bfc37bd92d981ee2b4ca3c8))
+  *  make logic less tricky and more functional (#5377) ([e8e05c23](https://github.com/kythe/kythe/commit/e8e05c23a8f9f4424d2f53e50a3d9b4f4af2529d))
+  *  fix tvar support with aliasing on (#5373) ([12fd89d0](https://github.com/kythe/kythe/commit/12fd89d0b5336084e960f1f6f12fd4ac7509f63b))
+  *  fix crash when logging non-identifier names (#5364) ([2ac93dae](https://github.com/kythe/kythe/commit/2ac93dae5ed35e0f79db69774ac5fef6a216ad36))
+* **go:**  re-add Compilation struct and associated methods (#5351) ([3b640116](https://github.com/kythe/kythe/commit/3b640116c90bb47c147600d973d68996dc83b675))
+* **go_indexer:**
+  *  compound assignments should be rw (#5446) ([3f41a10b](https://github.com/kythe/kythe/commit/3f41a10b5449bf763574f38f39f0a89e5ad13a86))
+  *  fix go package marked source (#5375) ([2b64f9fd](https://github.com/kythe/kythe/commit/2b64f9fdfae6407922aac022cb2ae192e8bb7aaa))
+* **java:**  move runtime dependencies to runtime_deps (#5433) ([29037261](https://github.com/kythe/kythe/commit/290372617db4dce660b0b049161fa1c7187a6079))
+* **java_extractor:**  disable service processors when extracting from Bazel (#5368) ([1920ad60](https://github.com/kythe/kythe/commit/1920ad607cfe6ad65acf1e6410dcddba09798245))
+* **java_indexer:**
+  *  properly handle null parent trees (#5448) ([e0c175ab](https://github.com/kythe/kythe/commit/e0c175abd566ba956c935635b49f924333635cda))
+  *  return null instead of throwing for unsupported attribute views (#5441) ([e5d3e384](https://github.com/kythe/kythe/commit/e5d3e384261303563fde214338570a6e5d8e66c4))
+  *  fix marked source test in JDK19 (#5435) ([ba71f5f2](https://github.com/kythe/kythe/commit/ba71f5f2c2316e71fc6f8cfe4835b0309443bdc3))
+  *  assign all diagnostics a corpus (#5337) ([024aba95](https://github.com/kythe/kythe/commit/024aba95140c497bb19ef87f884b090f6f900e89))
+* **proto_indexer:**
+  *  only decorate the type name in service definitions (#5478) ([272cac30](https://github.com/kythe/kythe/commit/272cac301772fbea67ea79158ff06181555c6743))
+  *  properly handle comments that end with an empty commented line (#5427) ([e979b1e3](https://github.com/kythe/kythe/commit/e979b1e37b2839c698517a72df4b361d6a1a6e5a))
+* **rust_common:**
+  *  migrate from tempdir crate to tempfile (#5489) ([0fa54f72](https://github.com/kythe/kythe/commit/0fa54f72c7a715626817eab71e9d8a8727b69965))
+  *  fix compatibility with 2022-12-21 (#5482) ([8d422877](https://github.com/kythe/kythe/commit/8d422877d34faa4323c53902868e7920bb630f51))
+  *  fix clippy lints of new rust version (#5425) ([d746a506](https://github.com/kythe/kythe/commit/d746a506e5276b945c2b64314bc9f0cbf85c3485))
+  *  fix rustc_lib location in release (#5339) ([5036c159](https://github.com/kythe/kythe/commit/5036c159387d25eb2c0e3b564b19ebde39b873c7))
+* **rust_extractor:**
+  *  ensure glob result is a file (#5470) ([8e023633](https://github.com/kythe/kythe/commit/8e023633326c6b73ba8941e8ac2e02e30eb9fab7))
+  *  set extractor_test script as executable (#5382) ([329663bf](https://github.com/kythe/kythe/commit/329663bf4c75d21053f235f1690b02cd9ea81df8))
+  *  improve logic for finding the save analysis file (#5354) ([c3bae69e](https://github.com/kythe/kythe/commit/c3bae69e2c85a1649c8dd508ef7ce7183636d814))
+* **rust_indexer:**  set root when creating vname for reference (#5471) ([f87b41e7](https://github.com/kythe/kythe/commit/f87b41e7165766b0997e53d8e238edc0e7f068d3))
+* **schema:**  get rid of more abs stuff (#5420) (#5439) ([dfb439a6](https://github.com/kythe/kythe/commit/dfb439a63de909e9eb67d0f36fc2471fe0693afb))
+* **serving:**
+  *  only count unskipped pages (#5477) ([2dbe8785](https://github.com/kythe/kythe/commit/2dbe878584f4b56fa7b278cf36003ebe6a672753))
+  *  ensure page read ahead stops promptly (#5473) ([005a6fb6](https://github.com/kythe/kythe/commit/005a6fb68395a3059bd52a0c557831fdb22ecc4c))
+  *  clear empty xref sets after all reads (#5465) ([48cd9d01](https://github.com/kythe/kythe/commit/48cd9d0106ca2ae0b62c5d0e33cd951a1ff7417a))
+  *  fix reversed inequality (#5464) ([1b69b531](https://github.com/kythe/kythe/commit/1b69b531bcca46218afbb91bb37c1aefd732ac05))
+  *  skip PageSet check when given no filters (#5463) ([207c04ff](https://github.com/kythe/kythe/commit/207c04ff17255442f30bf2fe94da47994de7b414))
+* **textproto:**  use ref/file for proto-file schema comments (#5416) ([e055c8a0](https://github.com/kythe/kythe/commit/e055c8a0ede82cac870de29d3be938bc9af3ae23))
+* **typescript:**
+  *  update typescript dependency to 4.8.4, move to apsect-build/rules_ts (#5495) ([301a10ab](https://github.com/kythe/kythe/commit/301a10abb34731951baa67d846afa51ccdb099be))
+  *  emit code/json not code facts; remove proto dependency (#5494) ([2996b793](https://github.com/kythe/kythe/commit/2996b79347147b46cfe2b2f1617d73dced9a6365))
+  *  add knob to disable some tests (#5479) ([dddd1dd2](https://github.com/kythe/kythe/commit/dddd1dd27e4c447ce79b7ccdc09b84eec958a9f2))
+* **typescript_indexer:**  fix linting issues (#5455) ([b5af7ecf](https://github.com/kythe/kythe/commit/b5af7ecf868bfa0a487556699300ee1021634b8b))
+
+#### Performance
+
+*   update patcher to use binary search (#5434) ([dda61f6f](https://github.com/kythe/kythe/commit/dda61f6f6753487c60087abdf518351a5c553c22))
+* **serving:**
+  *  only filter groups that match requested kinds (#5454) ([519da956](https://github.com/kythe/kythe/commit/519da9561dfd8ff3d669134f7419132c0f225498))
+  *  reduce patching to offsets; drop text (#5422) ([69bef08d](https://github.com/kythe/kythe/commit/69bef08de731d0a8e7aecdb54f2b9a97a4d2dbe7))
+
+#### Features
+
+* **api:**  add filtered xrefs counts to reply (#5447) ([4035fe45](https://github.com/kythe/kythe/commit/4035fe4546486eab77b6059dfefac6b892b210f6))
+* **cxx:**  emit member visibility facts (#5467) ([9f6d6847](https://github.com/kythe/kythe/commit/9f6d6847ddf644602f71eb6f2a03416628e3a649))
+* **cxx_indexer:**
+  *  distinguish direct function calls (#5378) ([134d58a5](https://github.com/kythe/kythe/commit/134d58a56f145458d4341a3e58e89ae1ca84e0d7))
+  *  handle deprecation via clang::availability (#5365) ([21d416c7](https://github.com/kythe/kythe/commit/21d416c73e94cc07704170f8fff37a25275fe99b))
+* **go_indexer:**
+  *  implement ref/writes edges for members (#5399) ([50e7e238](https://github.com/kythe/kythe/commit/50e7e23872ef10689ea67042ec741c65338bd670))
+  *  implement ref/writes edges (#5398) ([6c8237dc](https://github.com/kythe/kythe/commit/6c8237dc6d97dedb30910cd47ea1a379c37a6b91))
+  *  rework --use_compilation_corpus_as_default (#5338) ([9a4050a3](https://github.com/kythe/kythe/commit/9a4050a346f68533310be4b9466829c894ee4cca))
+* **go_serving:**  add ResolveVName to Unit interface (#5474) ([90ee7a3c](https://github.com/kythe/kythe/commit/90ee7a3c878a28bf5dc477f005668dd4f74b5b8f))
+* **indexing:**
+  *  support rewriting JSON-encoded code facts in proxy (#5491) ([c8359d19](https://github.com/kythe/kythe/commit/c8359d19d66a78db47465f0c94bad8dfe872a90e))
+  *  allow an AnalysisResult return from the driver (#5481) ([872432aa](https://github.com/kythe/kythe/commit/872432aac6acda1b00867a20f05b9446cbdbaa00))
+  *  add details field for AnalysisResults (#5480) ([6f17a714](https://github.com/kythe/kythe/commit/6f17a71442b54c155362b25f7092605a5e7d3be3))
+* **java_common:**
+  *  improve JDK19 source compatibility (#5432) ([ce8e3b13](https://github.com/kythe/kythe/commit/ce8e3b133aa1afcd471c152e20d8638cdcc41454))
+  *  include reflective fallback for compatibility shims (#5428) ([dba039ca](https://github.com/kythe/kythe/commit/dba039ca4fdbef9483687ffca05822da535d25ac))
+  *  add function to render signature as plaintext (#5400) ([a70ccc01](https://github.com/kythe/kythe/commit/a70ccc016d38d6d3406e6f4638294092265325f2))
+* **java_indexer:**  implement ref/writes edges (#5423) ([b426d6db](https://github.com/kythe/kythe/commit/b426d6db0fc40d1bfa6a7829460e853de9741a92))
+* **schema:**
+  *  document ref/writes edges (#5452) ([cfe09e00](https://github.com/kythe/kythe/commit/cfe09e0096ac3aeec98e4f5c2918b2386fff2c7a))
+  *  document canonical order of schema tags (#5440) ([7c9bf1b0](https://github.com/kythe/kythe/commit/7c9bf1b0bff8507003becfa60c89c15bf527f69f))
+* **serving:**
+  *  add option to read xref pages concurrently (#5469) ([9493a8d4](https://github.com/kythe/kythe/commit/9493a8d4ac6ff23f259bd46a6aae2713cbcee5a9))
+  *  allow some leeway time to return before xrefs deadline (#5460) ([a9cc5003](https://github.com/kythe/kythe/commit/a9cc5003712f1493b1821cd4665106ad9cfc2905))
+  *  trigram search index for xref pages (#5456) ([78c7db93](https://github.com/kythe/kythe/commit/78c7db93f14e021c60ce3d8ce72e35e5ed8fb2a2))
+  *  support marshalling Patchers (#5424) ([54a8664a](https://github.com/kythe/kythe/commit/54a8664a5191c2d3dee830480c2919bb519d11ed))
+* **tooling:**
+  *  mark conflicting /kythe/code facts as ok with ignore flag and add tests (#5410) ([73dab3e8](https://github.com/kythe/kythe/commit/73dab3e8fda62194c6fd8396ffd731a5de6edaa2))
+  *  add a flag to ignore conflicting /kythe/code facts (#5409) ([e99afd28](https://github.com/kythe/kythe/commit/e99afd280522ba800fd4fbc31b9099093ef8a435))
+* **typescript_indexer:**  add support for ref/writes (#5444) ([9d5400d2](https://github.com/kythe/kythe/commit/9d5400d230812949b0d30a3b566732737f2673f1))
+* **verifier:**  support code/json fact (#5493) ([0a9814e9](https://github.com/kythe/kythe/commit/0a9814e9252dc451d961d555a57f9fad80375d16))
+
+## [v0.0.60] - 2022-08-01
+
+#### Bug Fixes
+
+* **build:**  remove use of managed_directories (issue #5287) (#5288) ([8ad0e685](https://github.com/kythe/kythe/commit/8ad0e685616462dbf85472984c99aa5d2ea6de3f))
+* **cxx_indexer:**  emit non-implicit refs to explicit template specializations (#5290) ([9f0a3379](https://github.com/kythe/kythe/commit/9f0a33793c624043529cf5c8510c79587423d93f))
+* **java:**  rollback recent annotation ref/id changes (#5294) ([77a9a8e6](https://github.com/kythe/kythe/commit/77a9a8e6d3db4d24be19d31632651e44cd49908a))
+* **java_indexer:**
+  *  guard against NPE in ImmutableList (#5310) ([74dc8410](https://github.com/kythe/kythe/commit/74dc8410d24586bccb1f7853a8f37019fcba6e46))
+  *  assert that annotation invocations aren't refs (#5284) ([4b3e0f44](https://github.com/kythe/kythe/commit/4b3e0f44ac11b908e3299dd24c34ff5dfc00c373))
+* **rust_extractor:**  find the analysis file based on crate name (#5306) ([48b4edf3](https://github.com/kythe/kythe/commit/48b4edf36193ffe9f1b8d5263c54e6e2d058f6e4))
+* **rust_indexer:**
+  *  set the VName root on emitted Rust anchors (#5329) ([d282719f](https://github.com/kythe/kythe/commit/d282719f5fe1d97ff260964335f59145ed927a3e))
+  *  clean relative paths in indexer to match vname paths (#5279) ([0cd64758](https://github.com/kythe/kythe/commit/0cd64758cd54ff567bbe9babf74d4364a02c6859))
+  *  set corpus+lang on diagnostic (#5263) ([7274df4c](https://github.com/kythe/kythe/commit/7274df4cc8c09d5cbf0f2c6123cbcd8fa836d5c1))
+* **textproto:**  workaround upstream proto path bug (#5307) ([e770a7b0](https://github.com/kythe/kythe/commit/e770a7b03fb44ed5e2a3889aae10c2fbda77f734))
+* **typescript_indexer:**
+  * fix lint issue (#5265) ([56a3e50d](https://github.com/kythe/kythe/commit/56a3e50de0bdaab5892d614f0ba2cd66178b3d59))
+  * don't emit absvar nodes (#5273) ([1e4467b1](https://github.com/kythe/kythe/commit/1e4467b1051820340b90b510a14d68d079b2d64f))
+* **verifier:**  include @ in anchor labels and support EVars (#5291) ([992a3e94](https://github.com/kythe/kythe/commit/992a3e946df73948afaba06e384b1d164e27a86f))
+
+#### Features
+
+* **api:**  add resolved path filters for xrefs (#5274) ([cdde24e7](https://github.com/kythe/kythe/commit/cdde24e79b7b93670e9f89479942178bd30bfa27))
+* **cxx_indexer:**
+  *  record full signatures in a separate file (#5323) ([179c0282](https://github.com/kythe/kythe/commit/179c0282dc82000182cae84dbdcb08650345ad55))
+  *  implement directory traversal in indexer VFS (#5325) ([541aa64b](https://github.com/kythe/kythe/commit/541aa64bf3e5831c165a14b2da77e73b629c9f97))
+* **go_indexer:**
+  *  add --override_stdlib_corpus flag (#5314) ([5617eb8f](https://github.com/kythe/kythe/commit/5617eb8f211b0ee7f421f299f6c3b041e39c54e8))
+  *  optionally put builtins and stdlib items in main corpus (#5124) ([f83f9321](https://github.com/kythe/kythe/commit/f83f9321570d81a95039751278d41c5c198cf918))
+* **java extractor:**
+  * use default value if corpus is ambiguous (#5305) ([40808f97](https://github.com/kythe/kythe/commit/40808f97d474b2e6a609b585974311c4b8d32892))
+  * assign a corpus to compilation units (#5320) ([aa76256b](https://github.com/kythe/kythe/commit/aa76256b6fc2818301074f8225e646481669608c))
+* **java_indexer:**  
+  * use ref/id in annotation utterance contexts (#5281) ([584f65e7](https://github.com/kythe/kythe/commit/584f65e74a2bb016add70f609b310c027c78876c))
+  * log error when CU VName has empty corpus (#5303) ([c22d736b](https://github.com/kythe/kythe/commit/c22d736be1693aa43c9e85040fa1bc0d3934b585))
+* **proto:**  add a proto field to signify whether a file is protected (#5308) ([d08fbe6b](https://github.com/kythe/kythe/commit/d08fbe6b8af92efcb8639421362c71447e262c68))
+* **rust_indexer:**  emit proper xrefs to files generated by dependencies (#5326) ([82a61189](https://github.com/kythe/kythe/commit/82a61189a1af2558a3cec703f3a9a9e003ee7557))
+* **tooling:**
+  *  add --workspace_uri to kythe decor cmd (#5313) ([18f24c21](https://github.com/kythe/kythe/commit/18f24c21fb787dfb5de60d94f5934b1cbd26d287))
+  *  treat absolute kzips as a set (#5271) ([b5e81531](https://github.com/kythe/kythe/commit/b5e8153151dbe3a2c8a352f10c4a9081f03c375e))
+* **typescript_indexer:**
+  *  emit `field` subkind fact for class/interface/ojbect literal properties (#5293) ([3a3c772b](https://github.com/kythe/kythe/commit/3a3c772b4b9dc91692d961980d70943ef91700f9))
+  *  use ref/id for destructuring variables (#5292) ([60c0e854](https://github.com/kythe/kythe/commit/60c0e854e860314e9201dd008b53f1d20ad99c60))
+  *  emit edges from object literals to corresponding types (#5262) ([c496c5c0](https://github.com/kythe/kythe/commit/c496c5c00177e437e28bb3a75a5ef811d5d55ff7))
+* **verifier:**
+  *  allow simplifying graph output data (#5286) ([b6554980](https://github.com/kythe/kythe/commit/b655498061af8866ac2822c8beedfa0a043a6f09))
+  *  add a flag to elide nodes not bound as goals (#5269) ([2d4bc69e](https://github.com/kythe/kythe/commit/2d4bc69eaf31016bc86d53e2bd1b48ac7b70adc9))
+
 ## [v0.0.59] - 2022-04-18
 
 #### Features
@@ -1306,7 +1793,16 @@ https://github.com/kythe/kythe/compare/v0.0.26...v0.0.27
 
 Initial release
 
-[Unreleased] https://github.com/kythe/kythe/compare/v0.0.59...HEAD
+[Unreleased] https://github.com/kythe/kythe/compare/v0.0.68...HEAD
+[v0.0.68] https://github.com/kythe/kythe/compare/v0.0.67...v0.0.68
+[v0.0.67] https://github.com/kythe/kythe/compare/v0.0.66...v0.0.67
+[v0.0.66] https://github.com/kythe/kythe/compare/v0.0.65...v0.0.66
+[v0.0.65] https://github.com/kythe/kythe/compare/v0.0.64...v0.0.65
+[v0.0.64] https://github.com/kythe/kythe/compare/v0.0.63...v0.0.64
+[v0.0.63] https://github.com/kythe/kythe/compare/v0.0.62...v0.0.63
+[v0.0.62] https://github.com/kythe/kythe/compare/v0.0.61...v0.0.62
+[v0.0.61] https://github.com/kythe/kythe/compare/v0.0.60...v0.0.61
+[v0.0.60] https://github.com/kythe/kythe/compare/v0.0.59...v0.0.60
 [v0.0.59] https://github.com/kythe/kythe/compare/v0.0.58...v0.0.59
 [v0.0.58] https://github.com/kythe/kythe/compare/v0.0.57...v0.0.58
 [v0.0.57] https://github.com/kythe/kythe/compare/v0.0.56...v0.0.57

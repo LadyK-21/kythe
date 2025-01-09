@@ -37,14 +37,12 @@
 #include <map>
 
 #include "absl/flags/flag.h"
+#include "absl/log/log.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/ExprCXX.h"
-#include "glog/logging.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
-#include "google/protobuf/message.h"
 #include "kythe/cxx/indexer/cxx/IndexerASTHooks.h"
-#include "kythe/cxx/indexer/cxx/proto_conversions.h"
 
 ABSL_FLAG(std::string, parseprotohelper_full_name,
           "proto2::contrib::parse_proto::internal::ParseProtoHelper",
@@ -126,15 +124,17 @@ class ParseTextProtoHandler {
 const clang::CXXMethodDecl* FindAccessorDeclWithName(
     const clang::CXXRecordDecl& MsgDecl, llvm::StringRef Name) {
   for (const clang::CXXMethodDecl* Method : MsgDecl.methods()) {
-    // Accessors are user-provided, skip any compiler-generated operator/ctor.
-    if (Method->isUserProvided()) {
-      const auto MethodName = Method->getName();
+    // Accessors are user-provided, skip any compiler-generated or
+    // non-identifier operator/ctor.
+    if (const auto* II = Method->getIdentifier();
+        II && Method->isUserProvided()) {
+      const auto MethodName = II->getName();
       // Field accessors will either be the same as the field name or, if they
       // conflict with a language keyword, the field name with a trailing
       // underscore.
       if (MethodName == Name ||
           (MethodName.size() == Name.size() + 1 &&
-           MethodName.startswith(Name) && MethodName.endswith("_"))) {
+           MethodName.starts_with(Name) && MethodName.ends_with("_"))) {
         return Method;
       }
     }
@@ -192,10 +192,10 @@ bool ParseTextProtoHandler::ParseMsg(const clang::CXXRecordDecl& MsgDecl,
       case Tokenizer::TYPE_IDENTIFIER: {
         // Assume that this is a field name.
         const auto* AccessorDecl =
-            FindAccessorDeclWithName(MsgDecl, ToStringRef(Token.text));
+            FindAccessorDeclWithName(MsgDecl, Token.text);
         if (!AccessorDecl) {
           LOG(ERROR) << "Cannot find field " << Token.text << " for message "
-                     << MsgDecl.getName().str();
+                     << MsgDecl.getDeclName().getAsString();
           return false;
         }
         if (Token.line < 0) {
@@ -336,7 +336,7 @@ bool GoogleProtoLibrarySupport::CompilationUnitHasParseProtoHelperDecl(
 
 void GoogleProtoLibrarySupport::InspectCallExpr(
     IndexerASTVisitor& V, const clang::CallExpr* CallExpr,
-    const GraphObserver::Range& Range, GraphObserver::NodeId& CalleeId) {
+    const GraphObserver::Range& Range, const GraphObserver::NodeId& CalleeId) {
   if (!CompilationUnitHasParseProtoHelperDecl(V.getASTContext(), *CallExpr)) {
     // Return early if there is no ParseProtoHelper in the compilation unit.
     return;

@@ -16,7 +16,13 @@
 
 #include "KytheGraphRecorder.h"
 
-#include "kythe/proto/storage.pb.h"
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "absl/strings/string_view.h"
+#include "kythe/cxx/common/indexing/KytheOutputStream.h"
 
 namespace kythe {
 
@@ -25,14 +31,13 @@ static const std::string* const kNodeKindSpellings[] = {
     new std::string("variable"),   new std::string("talias"),
     new std::string("tapp"),       new std::string("tnominal"),
     new std::string("record"),     new std::string("sum"),
-    new std::string("constant"),   new std::string("abs"),
-    new std::string("absvar"),     new std::string("function"),
+    new std::string("constant"),   new std::string("function"),
     new std::string("lookup"),     new std::string("macro"),
     new std::string("interface"),  new std::string("package"),
     new std::string("tsigma"),     new std::string("doc"),
     new std::string("tbuiltin"),   new std::string("meta"),
     new std::string("diagnostic"), new std::string("clang/usr"),
-    new std::string("tvar")};
+    new std::string("tvar"),       new std::string("name")};
 
 static const std::string* kEdgeKindSpellings[] = {
     new std::string("/kythe/edge/defines"),
@@ -43,8 +48,6 @@ static const std::string* kEdgeKindSpellings[] = {
     new std::string("/kythe/edge/param"),
     new std::string("/kythe/edge/aliases"),
     new std::string("/kythe/edge/aliases/root"),
-    new std::string("/kythe/edge/completes/uniquely"),
-    new std::string("/kythe/edge/completes"),
     new std::string("/kythe/edge/childof"),
     new std::string("/kythe/edge/specializes"),
     new std::string("/kythe/edge/ref/call"),
@@ -87,7 +90,12 @@ static const std::string* kEdgeKindSpellings[] = {
     new std::string("/kythe/edge/influences"),
     new std::string("/kythe/edge/ref/file"),
     new std::string("/kythe/edge/tparam"),
-    new std::string("/kythe/edge/completedby")};
+    new std::string("/kythe/edge/completedby"),
+    new std::string("/kythe/edge/ref/call/direct"),
+    new std::string("/kythe/edge/ref/call/direct/implicit"),
+    new std::string("/kythe/edge/denotes"),
+    new std::string("/kythe/edge/named"),
+    new std::string("/kythe/edge/exp/typed/init")};
 
 bool of_spelling(absl::string_view str, EdgeKindID* edge_id) {
   size_t edge_index = 0;
@@ -124,6 +132,8 @@ static const std::string* const kPropertySpellings[] = {
     new std::string("/kythe/context/url"),
     new std::string("/kythe/doc/uri"),
     new std::string("/kythe/build/config"),
+    new std::string("/kythe/visibility"),
+    new std::string("/kythe/exp/code/flat"),
 };
 
 static const std::string* const kEmptyStringSpelling = new std::string("");
@@ -155,6 +165,12 @@ void KytheGraphRecorder::AddProperty(const VNameRef& node_vname,
                                      PropertyID property_id,
                                      const size_t property_value) {
   AddProperty(node_vname, property_id, std::to_string(property_value));
+}
+
+void KytheGraphRecorder::AddFlatSource(const VNameRef& node_vname,
+                                       std::string_view source) {
+  stream_->Emit(
+      FactRef{&node_vname, spelling_of(PropertyID::kFlatCode), source});
 }
 
 void KytheGraphRecorder::AddMarkedSource(const VNameRef& node_vname,

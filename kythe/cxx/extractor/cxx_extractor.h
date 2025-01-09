@@ -18,12 +18,13 @@
 #define KYTHE_CXX_EXTRACTOR_EXTRACTOR_H_
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 
-#include "absl/types/optional.h"
+#include "absl/log/log.h"
 #include "clang/Tooling/Tooling.h"
-#include "glog/logging.h"
 #include "google/protobuf/io/coded_stream.h"
 #include "google/protobuf/io/gzip_stream.h"
 #include "google/protobuf/io/zero_copy_stream.h"
@@ -138,13 +139,17 @@ class KzipWriterSink : public CompilationWriterSink {
  private:
   std::string path_;
   OutputPathType path_type_;
-  absl::optional<IndexWriter> writer_;
+  std::optional<IndexWriter> writer_;
 };
 
 /// \brief Collects information about compilation arguments and targets and
 /// writes it to an index file.
 class CompilationWriter {
  public:
+  CompilationWriter() = default;
+  CompilationWriter(const CompilationWriter&) = delete;
+  CompilationWriter& operator=(const CompilationWriter&) = delete;
+
   /// \brief Set the arguments to be used for this compilation.
   ///
   /// `args` should be the `argv` (without terminating null) that would be
@@ -184,6 +189,13 @@ class CompilationWriter {
     canonicalizer_.reset();
     path_policy_ = policy;
   }
+  /// \brief Configure the path canonicalization configuration.
+  void set_path_canonicalization_policy_overrides(
+      std::vector<PathCanonicalizer::PathEntry> entries) {
+    canonicalizer_.reset();
+    path_policy_overrides_ = std::move(entries);
+  }
+  /// \brief Configure per-path canonicalization overrides.
   /// \brief Don't include empty directories.
   void set_exclude_empty_dirs(bool exclude) { exclude_empty_dirs_ = exclude; }
   /// \brief Don't include files read during autoconfiguration.
@@ -196,8 +208,7 @@ class CompilationWriter {
       std::unique_ptr<CompilationWriterSink> sink,
       const std::string& main_source_file, const std::string& entry_context,
       const std::unordered_map<std::string, SourceFile>& source_files,
-      const HeaderSearchInfo* header_search_info, bool had_errors,
-      const std::string& clang_working_dir);
+      const HeaderSearchInfo* header_search_info, bool had_errors);
   /// \brief Set the fields of `file_input` for the given file.
   /// \param clang_path A path to the file as seen by clang.
   /// \param source_file The `SourceFile` to configure `file_input` with.
@@ -221,12 +232,21 @@ class CompilationWriter {
   /// \brief Records that a directory path was successfully opened for status.
   void DirectoryOpenedForStatus(const std::string& clang_path);
 
+  // A "strong" alias to differentiate filesystem paths from "root" paths.
+  struct RootPath : std::tuple<std::string> {
+    const std::string& value() const& { return std::get<0>(*this); }
+    std::string& value() & { return std::get<0>(*this); }
+    std::string&& value() && { return std::move(std::get<0>(*this)); }
+  };
+  /// \brief Attempts to generate a root-relative path.
+  /// This is a path relative to KYTHE_ROOT_DIRECTORY, not the working directory
+  /// and should only be used for doing VName mapping a lookups.
+  RootPath RootRelativePath(absl::string_view path);
+
   /// \brief Attempts to generate a VName for the file at some path.
   /// \param path The path (likely from Clang) to the file.
-  kythe::proto::VName VNameForPath(const std::string& path);
-
-  /// \brief Attempts to generate a root-relative path.
-  std::string RelativizePath(absl::string_view path);
+  kythe::proto::VName VNameForPath(absl::string_view path);
+  kythe::proto::VName VNameForPath(const RootPath& path);
 
  private:
   /// Called to read and insert content for extra include files.
@@ -245,6 +265,8 @@ class CompilationWriter {
   /// The policy to use when generating relative paths.
   PathCanonicalizer::Policy path_policy_ =
       PathCanonicalizer::Policy::kCleanOnly;
+  /// The per-path policy to use when generating relative paths.
+  std::vector<PathCanonicalizer::PathEntry> path_policy_overrides_;
   /// If nonempty, the name of the target that generated this compilation.
   std::string target_name_;
   /// If nonempty, the rule type that generated this compilation.
@@ -267,7 +289,7 @@ class CompilationWriter {
 
   /// The canonicalizer to use when constructing relative paths.
   /// Lazily built from policy and root above.
-  absl::optional<PathCanonicalizer> canonicalizer_;
+  std::optional<PathCanonicalizer> canonicalizer_;
 };
 
 /// \brief Creates a `FrontendAction` that records information about a
@@ -308,8 +330,12 @@ class ExtractorConfiguration {
     compilation_output_path_ = path;
   }
   /// \brief Sets the canonicalization policy to use for VName paths.
-  void SetPathCanonizalizationPolicy(PathCanonicalizer::Policy policy) {
+  void SetPathCanonizalizationPolicy(
+      PathCanonicalizer::Policy policy,
+      std::vector<PathCanonicalizer::PathEntry> overrides = {}) {
     index_writer_.set_path_canonicalization_policy(policy);
+    index_writer_.set_path_canonicalization_policy_overrides(
+        std::move(overrides));
   }
   /// \brief Executes the extractor with this configuration, returning true on
   /// success.
@@ -322,8 +348,6 @@ class ExtractorConfiguration {
  private:
   /// The argument list to pass to Clang.
   std::vector<std::string> final_args_;
-  /// The FileSystemOptions to use during extraction.
-  clang::FileSystemOptions file_system_options_;
   /// The CompilationWriter to use.
   CompilationWriter index_writer_;
   /// True if we should use our internal system headers; false if not.

@@ -17,9 +17,7 @@
 #include "kythe/cxx/indexer/cxx/clang_utils.h"
 
 #include "clang/AST/DeclTemplate.h"
-#include "clang/Basic/CharInfo.h"
-#include "clang/Lex/Lexer.h"
-#include "glog/logging.h"
+#include "clang/AST/DeclVisitor.h"
 
 namespace kythe {
 bool isObjCSelector(const clang::DeclarationName& DN) {
@@ -33,24 +31,90 @@ bool isObjCSelector(const clang::DeclarationName& DN) {
   }
 }
 
-clang::SourceLocation GetLocForEndOfToken(
-    const clang::SourceManager& source_manager,
-    const clang::LangOptions& lang_options,
-    clang::SourceLocation start_location) {
-  if (start_location.isMacroID()) {
-    start_location = source_manager.getExpansionLoc(start_location);
+namespace {
+class DereferenceMemberTemplatesDeclVisitor
+    : public clang::ConstDeclVisitor<DereferenceMemberTemplatesDeclVisitor,
+                                     void> {
+ public:
+  DereferenceMemberTemplatesDeclVisitor() = default;
+
+  const clang::Decl* Visit(const clang::Decl* decl) {
+    decl_ = decl;
+    ConstDeclVisitor::Visit(decl);
+    return decl_;
   }
-  return clang::Lexer::getLocForEndOfToken(start_location,
-                                           0 /* offset from end of token */,
-                                           source_manager, lang_options);
+
+  void VisitFunctionTemplateDecl(const clang::FunctionTemplateDecl* ft) {
+    while ((ft = ft->getInstantiatedFromMemberTemplate())) {
+      if (ft->getTemplatedDecl() != nullptr) decl_ = ft->getTemplatedDecl();
+    }
+  }
+
+  void VisitClassTemplateDecl(const clang::ClassTemplateDecl* ct) {
+    while ((ct = ct->getInstantiatedFromMemberTemplate())) {
+      if (ct->getTemplatedDecl() != nullptr) decl_ = ct->getTemplatedDecl();
+    }
+  }
+
+  void VisitClassTemplatePartialSpecializationDecl(
+      const clang::ClassTemplatePartialSpecializationDecl* ctp) {
+    while ((ctp = ctp->getInstantiatedFromMemberTemplate())) {
+      decl_ = ctp;
+    }
+  }
+
+  void VisitVarTemplatePartialSpecializationDecl(
+      const clang::VarTemplatePartialSpecializationDecl* vtp) {
+    while ((vtp = vtp->getInstantiatedFromMember())) {
+      decl_ = vtp;
+    }
+  }
+
+  void VisitVarTemplateDecl(const clang::VarTemplateDecl* vt) {
+    while ((vt = vt->getInstantiatedFromMemberTemplate())) {
+      if (vt->getTemplatedDecl() != nullptr) decl_ = vt->getTemplatedDecl();
+    }
+  }
+
+  void VisitTypeAliasTemplateDecl(const clang::TypeAliasTemplateDecl* at) {
+    while ((at = at->getInstantiatedFromMemberTemplate())) {
+      if (at->getTemplatedDecl() != nullptr) decl_ = at->getTemplatedDecl();
+    }
+  }
+
+ private:
+  const clang::Decl* decl_;
+};
+
+}  // anonymous namespace
+
+const clang::Decl* DereferenceMemberTemplates(const clang::Decl* decl) {
+  return DereferenceMemberTemplatesDeclVisitor().Visit(decl);
 }
 
-// TODO(zarko): Update this to handle member specializations.
+bool IsExplicitOrInstantiatedFromPartialSpecialization(
+    const clang::CXXRecordDecl* decl) {
+  if (const auto* template_decl =
+          clang::dyn_cast_or_null<clang::ClassTemplateSpecializationDecl>(
+              decl)) {
+    if (template_decl->isExplicitSpecialization()) {
+      return true;
+    }
+    auto instantiated_from = template_decl->getInstantiatedFrom();
+    if (!instantiated_from.isNull() &&
+        instantiated_from
+            .is<clang::ClassTemplatePartialSpecializationDecl*>()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const clang::Decl* FindSpecializedTemplate(const clang::Decl* decl) {
   if (const auto* FD = llvm::dyn_cast<const clang::FunctionDecl>(decl)) {
     if (auto* ftsi = FD->getTemplateSpecializationInfo()) {
       if (!ftsi->isExplicitInstantiationOrSpecialization()) {
-        return ftsi->getTemplate();
+        return DereferenceMemberTemplates(ftsi->getTemplate());
       }
     }
   } else if (const auto* ctsd =
@@ -61,10 +125,10 @@ const clang::Decl* FindSpecializedTemplate(const clang::Decl* decl) {
       if (const auto* partial =
               primary_or_partial
                   .dyn_cast<clang::ClassTemplatePartialSpecializationDecl*>()) {
-        return partial;
+        return DereferenceMemberTemplates(partial);
       } else if (const auto* primary =
                      primary_or_partial.dyn_cast<clang::ClassTemplateDecl*>()) {
-        return primary;
+        return DereferenceMemberTemplates(primary);
       }
     }
   } else if (const auto* vtsd =
@@ -75,14 +139,14 @@ const clang::Decl* FindSpecializedTemplate(const clang::Decl* decl) {
       if (const auto* partial =
               primary_or_partial
                   .dyn_cast<clang::VarTemplatePartialSpecializationDecl*>()) {
-        return partial;
+        return DereferenceMemberTemplates(partial);
       } else if (const auto* primary =
                      primary_or_partial.dyn_cast<clang::VarTemplateDecl*>()) {
-        return primary;
+        return DereferenceMemberTemplates(primary);
       }
     }
   }
-  return decl;
+  return DereferenceMemberTemplates(decl);
 }
 
 bool ShouldHaveBlameContext(const clang::Decl* decl) {
@@ -96,32 +160,21 @@ bool ShouldHaveBlameContext(const clang::Decl* decl) {
   }
 }
 
-const clang::Stmt* FindLValueHead(const clang::Stmt* stmt) {
-  if (stmt == nullptr) return nullptr;
-  switch (stmt->getStmtClass()) {
+const clang::Expr* FindLValueHead(const clang::Expr* expr) {
+  if (expr == nullptr) return nullptr;
+  expr = expr->IgnoreParens();
+  if (const auto* star = llvm::dyn_cast_or_null<clang::UnaryOperator>(expr);
+      star != nullptr && star->getOpcode() == clang::UO_Deref &&
+      star->getSubExpr() != nullptr) {
+    return expr;
+  }
+  switch (expr->getStmtClass()) {
     case clang::Stmt::StmtClass::DeclRefExprClass:
     case clang::Stmt::StmtClass::ObjCIvarRefExprClass:
     case clang::Stmt::StmtClass::MemberExprClass:
-      return stmt;
+      return expr;
     default:
       return nullptr;
   }
-}
-
-const clang::Decl* GetInfluencedDeclFromLValueHead(const clang::Stmt* head) {
-  if (head == nullptr) return nullptr;
-  if (auto* expr = llvm::dyn_cast_or_null<clang::DeclRefExpr>(head);
-      expr != nullptr && expr->getFoundDecl() != nullptr &&
-      (expr->getFoundDecl()->getKind() == clang::Decl::Kind::Var ||
-       expr->getFoundDecl()->getKind() == clang::Decl::Kind::ParmVar)) {
-    return expr->getFoundDecl();
-  }
-  if (auto* expr = llvm::dyn_cast_or_null<clang::MemberExpr>(head);
-      expr != nullptr) {
-    if (auto* member = expr->getMemberDecl(); member != nullptr) {
-      return member;
-    }
-  }
-  return nullptr;
 }
 }  // namespace kythe

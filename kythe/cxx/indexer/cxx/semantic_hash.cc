@@ -17,7 +17,8 @@
 
 #include <string>
 
-#include "glog/logging.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 
 namespace kythe {
 
@@ -73,12 +74,16 @@ uint64_t SemanticHash::Hash(const clang::TemplateArgument& arg) const {
       return 0;
     case TemplateArgument::Integral: {
       auto value = arg.getAsIntegral();
-      if (value.getMinSignedBits() <= sizeof(uint64_t) * CHAR_BIT) {
-        return static_cast<uint64_t>(value.getExtValue());
+      if (value.getSignificantBits() <= sizeof(uint64_t) * CHAR_BIT) {
+        return static_cast<uint64_t>(value.isSigned() ? value.getSExtValue()
+                                                      : value.getZExtValue());
       } else {
         return std::hash<std::string>()(llvm::toString(value, 10));
       }
     }
+    case TemplateArgument::StructuralValue:
+      CHECK(ignore_unimplemented_) << "SemanticHash(StructuralValue)";
+      return 0;
     case TemplateArgument::Template:
       return Hash(arg.getAsTemplate()) ^ 0x4040404004040404LL;
     case TemplateArgument::TemplateExpansion:

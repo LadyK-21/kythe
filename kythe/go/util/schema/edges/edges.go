@@ -31,6 +31,7 @@ const Prefix = schema.Prefix + "edge/"
 // Edge kind labels
 const (
 	ChildOf                 = Prefix + "childof"
+	Denotes                 = Prefix + "denotes"
 	Extends                 = Prefix + "extends"
 	ExtendsPrivate          = Prefix + "extends/private"
 	ExtendsPrivateVirtual   = Prefix + "extends/private/virtual"
@@ -51,19 +52,19 @@ const (
 
 // Edge kinds associated with anchors
 const (
-	Completes         = Prefix + "completes"
-	CompletesUniquely = Prefix + "completes/uniquely"
-	Defines           = Prefix + "defines"
-	DefinesBinding    = Prefix + "defines/binding"
-	Documents         = Prefix + "documents"
-	Ref               = Prefix + "ref"
-	RefCall           = Prefix + "ref/call"
-	RefImplicit       = Prefix + "ref/implicit"
-	RefCallImplicit   = Prefix + "ref/call/implicit"
-	RefImports        = Prefix + "ref/imports"
-	RefInit           = Prefix + "ref/init"
-	RefInitImplicit   = Prefix + "ref/init/implicit"
-	Tagged            = Prefix + "tagged"
+	Defines         = Prefix + "defines"
+	DefinesBinding  = Prefix + "defines/binding"
+	Documents       = Prefix + "documents"
+	Ref             = Prefix + "ref"
+	RefCall         = Prefix + "ref/call"
+	RefCallImplicit = Prefix + "ref/call/implicit"
+	RefDoc          = Prefix + "ref/doc"
+	RefImplicit     = Prefix + "ref/implicit"
+	RefImports      = Prefix + "ref/imports"
+	RefInit         = Prefix + "ref/init"
+	RefInitImplicit = Prefix + "ref/init/implicit"
+	RefWrites       = Prefix + "ref/writes"
+	Tagged          = Prefix + "tagged"
 )
 
 // ParamIndex returns an edge label of the form "param.i" for the i given.
@@ -95,8 +96,8 @@ func IsReverse(kind string) bool { return strings.HasPrefix(kind, revPrefix) }
 // IsVariant reports whether x is equal to or a subkind of y.
 // For example, each of the following returns true:
 //
-//    IsVariant("/kythe/edge/defines/binding", "/kythe/edge/defines")
-//    IsVariant("/kythe/edge/defines", "/kythe/edge/defines")
+//	IsVariant("/kythe/edge/defines/binding", "/kythe/edge/defines")
+//	IsVariant("/kythe/edge/defines", "/kythe/edge/defines")
 //
 // Moreover IsVariant(x, y) == IsVariant(Mirror(x), Mirror(y)) for all x, y.
 func IsVariant(x, y string) bool { return x == y || strings.HasPrefix(x, y+"/") }
@@ -104,8 +105,7 @@ func IsVariant(x, y string) bool { return x == y || strings.HasPrefix(x, y+"/") 
 // IsAnchorEdge reports whether kind is one associated with anchors.
 func IsAnchorEdge(kind string) bool {
 	canon := Canonical(kind)
-	return IsVariant(canon, Completes) || IsVariant(canon, CompletesUniquely) ||
-		IsVariant(canon, Defines) || IsVariant(canon, DefinesBinding) ||
+	return IsVariant(canon, Defines) || IsVariant(canon, DefinesBinding) ||
 		IsVariant(canon, Documents) ||
 		IsVariant(canon, Ref) || IsVariant(canon, RefCall)
 }

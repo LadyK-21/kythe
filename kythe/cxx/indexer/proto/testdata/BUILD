@@ -1,10 +1,24 @@
-load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load("@bazel_skylib//:bzl_library.bzl", "bzl_library")
+load("@bazel_skylib//rules:copy_file.bzl", "copy_file")
 load(":proto_verifier_test.bzl", "proto_verifier_test")
+
+package(features = ["layering_check"])
 
 licenses(["notice"])  # Apache 2.0
 
-exports_files(["LICENSE"])
+proto_verifier_test(
+    name = "signatures",
+    srcs = [":signatures_proto"],
+    resolve_code_facts = True,
+    tags = ["basic"],
+)
+
+proto_verifier_test(
+    name = "signatures3",
+    srcs = [":signatures3_proto"],
+    resolve_code_facts = True,
+    tags = ["basic"],
+)
 
 proto_verifier_test(
     name = "file_node_existence",
@@ -142,6 +156,11 @@ test_suite(
 bzl_library(
     name = "proto_verifier_test_bzl",
     srcs = ["proto_verifier_test.bzl"],
+    visibility = ["//kythe/cxx/indexer/textproto/testdata:__pkg__"],
+    deps = [
+        "//tools/build_rules/verifier_test:verifier_test_bzl",
+        "@rules_proto//proto:defs",
+    ],
 )
 
 proto_library(
@@ -168,6 +187,16 @@ proto_library(
     name = "basic_extend_proto",
     srcs = ["basic/extend.proto"],
     deps = [":other_package_proto"],
+)
+
+proto_library(
+    name = "signatures_proto",
+    srcs = ["basic/signatures.proto"],
+)
+
+proto_library(
+    name = "signatures3_proto",
+    srcs = ["basic/signatures3.proto"],
 )
 
 proto_library(

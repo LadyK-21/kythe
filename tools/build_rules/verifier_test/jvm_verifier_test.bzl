@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@rules_java//java:defs.bzl", "JavaInfo")
 load(
     ":verifier_test.bzl",
     "KytheVerifierSources",
@@ -94,8 +95,9 @@ def jvm_verifier_test(
         name = name + "_entries",
         testonly = True,
         indexer = indexer,
+        target_indexer = indexer,
         opts = indexer_opts,
-        tags = tags,
+        tags = tags + ["manual"],
         visibility = visibility,
         deps = [kzip],
     )

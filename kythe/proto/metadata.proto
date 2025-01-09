@@ -17,6 +17,7 @@ syntax = "proto3";
 
 package kythe.proto.metadata;
 
+option go_package = "kythe.io/kythe/proto/metadata_go_proto";
 option java_package = "com.google.devtools.kythe.proto";
 
 import "kythe/proto/storage.proto";
@@ -43,6 +44,9 @@ message MappingRule {
                          // range and source definition.
     ANCHOR_ANCHOR = 3;   // Rule describing an imputes edge between target range
                          // and source range.
+    FILE_DEFINES = 4;    // Rule describing a generates edge between
+                         // `source_vname` and the described file. Offsets are
+                         // ignored.
   }
 
   Type type = 1;
@@ -66,11 +70,12 @@ message MappingRule {
     SEMA_NONE = 0;
     SEMA_WRITE = 1;
     SEMA_READ_WRITE = 2;
+    SEMA_TAKE_ALIAS = 3;
   };
 
   Semantic semantic = 11;
 
-  // Fields only relevant if type == anchor_anchor.
+  // Fields only relevant if type == anchor_anchor or type == file_defines.
   kythe.proto.VName source_vname =
       6;                    // Anchor node in the generating source file.
                             // Note: the signature in this vname, if present,

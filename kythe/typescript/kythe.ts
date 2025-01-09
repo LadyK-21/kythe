@@ -47,10 +47,9 @@ export enum EdgeKind {
   BOUNDED_UPPER = '/kythe/edge/bounded/upper',
   CHILD_OF = '/kythe/edge/childof',
   CHILD_OF_CONTEXT = '/kythe/edge/childof/context',
-  COMPLETES = '/kythe/edge/completes',
-  COMPLETES_UNIQUELY = '/kythe/edge/completes/uniquely',
   DEFINES = '/kythe/edge/defines',
   DEFINES_BINDING = '/kythe/edge/defines/binding',
+  DEFINES_IMPLICIT = '/kythe/edge/defines/implicit',
   DEPENDS = '/kythe/edge/depends',
   DOCUMENTS = '/kythe/edge/documents',
   EXPORTS = '/kythe/edge/exports',
@@ -81,6 +80,7 @@ export enum EdgeKind {
   REF_INIT = '/kythe/edge/ref/init',
   REF_INIT_IMPLICIT = '/kythe/edge/ref/init/implicit',
   REF_QUERIES = '/kythe/edge/ref/queries',
+  REF_WRITES = '/kythe/edge/ref/writes',
   SATISFIES = '/kythe/edge/satisfies',
   SPECIALIZES = '/kythe/edge/specializes',
   SPECIALIZES_SPECULATIVE = '/kythe/edge/specializes/speculative',
@@ -110,7 +110,6 @@ export function makeOrdinalEdge(edge: EdgeKind, ordinal: number): OrdinalEdge {
  *   https://github.com/kythe/kythe/tree/master/kythe/data/schema_index.textproto#L64
  */
 export enum NodeKind {
-  ABSVAR = 'absvar',
   ANCHOR = 'anchor',
   CONSTANT = 'constant',
   DIAGNOSTIC = 'diagnostic',
@@ -143,7 +142,7 @@ export enum NodeKind {
  */
 export enum FactName {
   BUILD_CONFIG = '/kythe/build/config',
-  CODE = '/kythe/code',
+  CODE_JSON = '/kythe/code/json',
   COMPLETE = '/kythe/complete',
   CONTEXT_URL = '/kythe/context/url',
   DETAILS = '/kythe/details',
@@ -155,6 +154,7 @@ export enum FactName {
   NODE_KIND = '/kythe/node/kind',
   PARAM_DEFAULT = '/kythe/param/default',
   RULE_CLASS = '/kythe/ruleclass',
+  SEMANTIC_GENERATED = '/kythe/semantic/generated',
   SNIPPET_END = '/kythe/snippet/end',
   SNIPPET_START = '/kythe/snippet/start',
   SUBKIND = '/kythe/subkind',
@@ -231,4 +231,46 @@ export interface JSONEdge {
   target: VName;
   edge_kind: EdgeKind|OrdinalEdge;
   fact_name: '/';
+}
+
+/*
+ * Kythe marked source Linkd expressed in the schema JSON-style encoding.
+ */
+export interface JSONLink {
+  definition: string[];
+}
+
+/*
+ * Enum corresponding to Kythe MarkedSource.Kind proto enum.
+ */
+export enum MarkedSourceKind {
+  BOX,
+  TYPE,
+  PARAMETER,
+  IDENTIFIER,
+  CONTEXT,
+  INITIALIZER,
+  PARAMETER_LOOKUP_BY_PARAM,
+  LOOKUP_BY_PARAM,
+  PARAMETER_LOOKUP_BY_PARAM_WITH_DEFAULTS,
+  LOOKUP_BY_TYPED,
+  PARAMETER_LOOKUP_BY_TPARAM,
+  LOOKUP_BY_TPARAM,
+  MODIFIER,
+}
+
+
+/*
+ * Kythe MarkedSource expressed in the schema JSON-style encoding.
+ */
+export interface JSONMarkedSource {
+  kind: MarkedSourceKind;
+  pre_text?: string;
+  child?: JSONMarkedSource[];
+  post_child_text?: string;
+  post_text?: string;
+  lookup_index?: number;
+  default_children_count?: number;
+  add_final_list_token?: boolean;
+  link?: JSONLink[];
 }

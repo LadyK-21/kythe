@@ -20,16 +20,17 @@
 /// \file
 /// \brief Defines the class kythe::GraphObserver
 
+#include <optional>
 #include <string>
 
+#include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
 #include "absl/strings/string_view.h"
-#include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Lex/Preprocessor.h"
-#include "glog/logging.h"
 #include "kythe/cxx/common/indexing/KytheCachingOutput.h"
 #include "kythe/cxx/common/kythe_metadata_file.h"
 #include "llvm/ADT/APSInt.h"
@@ -41,9 +42,6 @@
 namespace kythe {
 
 // TODO(zarko): Most of the documentation for this interface belongs here.
-
-/// \brief A one-way hash for `InString`.
-std::string CompressString(absl::string_view InString, bool Force = false);
 
 enum class ProfilingEvent {
   Enter,  ///< A profiling section was entered.
@@ -72,6 +70,25 @@ class ProfileBlock {
   const char* SectionName;
 };
 
+class HashRecorder {
+ public:
+  virtual void RecordHash(absl::string_view hash, absl::string_view web64hash,
+                          absl::string_view original) {}
+  virtual ~HashRecorder() = default;
+};
+
+class FileHashRecorder : public HashRecorder {
+ public:
+  explicit FileHashRecorder(absl::string_view path);
+  void RecordHash(absl::string_view hash, absl::string_view web64hash,
+                  absl::string_view original) override;
+  ~FileHashRecorder() override;
+
+ private:
+  FILE* out_file_ = nullptr;
+  absl::flat_hash_set<std::string> hashes_;
+};
+
 /// \brief An interface for processing elements discovered as part of a
 /// compilation unit.
 ///
@@ -87,14 +104,17 @@ class GraphObserver {
   /// to each `GraphObserver` implementation and may include the claimable
   /// object's representative source path, whether a claim has been successfully
   /// made (thus making the token active), and so on.
+  ///
+  /// Note that it is safe to use llvm::dyn_cast to narrow a ClaimToken to a
+  /// KytheClaimToken.
   class ClaimToken {
    public:
-    virtual ~ClaimToken(){};
+    virtual ~ClaimToken() = default;
     /// \brief Returns a string representation of `Identity` stamped with this
     /// token.
     virtual std::string StampIdentity(const std::string& Identity) const = 0;
     /// \brief Returns a value unique to each implementation of `ClaimToken`.
-    virtual void* GetClass() const = 0;
+    virtual uintptr_t GetClass() const = 0;
     /// \brief Checks for equality.
     ///
     /// `ClaimTokens` are only equal if they have the same value for `GetClass`.
@@ -112,6 +132,19 @@ class GraphObserver {
     GraphObserver& S;
   };
 
+  /// \brief Uses a one-way function to encode `InString`. Guaranteed to return
+  /// only websafe base64 characters.
+  std::string ForceEncodeString(absl::string_view InString) const;
+
+  /// \brief Uses a one-way function to compress `InString` if it's longer than
+  /// the result of using that function would be.
+  std::string CompressString(absl::string_view InString) const;
+
+  /// \brief Uses a one-way function to compress the anchor signature
+  /// `InSignature` if it's longer than the result of using that function would
+  /// be.
+  std::string CompressAnchorSignature(absl::string_view InSignature) const;
+
   /// \brief Push another group onto the group stack, assigning
   /// any observations that follow to it.
   virtual void Delimit() {}
@@ -126,14 +159,8 @@ class GraphObserver {
   /// determined by the `IndexerASTHooks` and `GraphObserver` override.
   class NodeId {
    public:
-    NodeId(const ClaimToken* Token, const std::string& Identity)
-        : Token(Token), Identity(CompressString(Identity)) {}
+    NodeId() {}
     NodeId(const NodeId& C) { *this = C; }
-    NodeId& operator=(const NodeId* C) {
-      Token = C->Token;
-      Identity = C->Identity;
-      return *this;
-    }
     static NodeId CreateUncompressed(const ClaimToken* Token,
                                      const std::string& Identity) {
       NodeId NewId(Token, "");
@@ -161,11 +188,27 @@ class GraphObserver {
     }
     const std::string& getRawIdentity() const { return Identity; }
     const ClaimToken* getToken() const { return Token; }
+    /// \brief Create a derived NodeId from this one.
+    ///
+    /// This is meant for debugging. You'll likely want to disable
+    /// `ForceEncodeString` in GraphObserver.cc.
+    NodeId derive(const std::string& s) const {
+      return NodeId(Token, Identity + s);
+    }
 
    private:
-    const ClaimToken* Token;
+    friend class GraphObserver;
+    explicit NodeId(const ClaimToken* Token, const std::string& Identity)
+        : Token(Token), Identity(Identity) {}
+
+    const ClaimToken* Token = nullptr;
     std::string Identity;
   };
+
+  NodeId MakeNodeId(const ClaimToken* Token,
+                    const std::string& Identity) const {
+    return NodeId(Token, CompressString(Identity));
+  }
 
   /// \brief A range of source text, potentially associated with a node.
   ///
@@ -275,6 +318,8 @@ class GraphObserver {
     kWrite,
     /// This use site is both a read and a write.
     kReadWrite,
+    /// This use site takes an alias.
+    kTakeAlias,
   };
 
   GraphObserver() {}
@@ -293,12 +338,14 @@ class GraphObserver {
   /// \param SearchString if non-empty, is used to locate a C-style comment
   /// inside `FE` that contains metadata.
   /// \param TargetFile the file to which the metadata is being applied.
-  virtual void applyMetadataFile(clang::FileID ID, const clang::FileEntry* FE,
+  virtual void applyMetadataFile(clang::FileID ID, clang::FileEntryRef FE,
                                  const std::string& SearchString,
-                                 const clang::FileEntry* TargetFile) {}
+                                 clang::FileEntryRef TargetFile) {}
 
   /// \param LO the language options in use.
-  virtual void setLangOptions(clang::LangOptions* LO) { LangOptions = LO; }
+  virtual void setLangOptions(const clang::LangOptions* LO) {
+    LangOptions = LO;
+  }
 
   /// \param PP The `Preprocessor` to use.
   virtual void setPreprocessor(clang::Preprocessor* PP) { Preprocessor = PP; }
@@ -334,8 +381,7 @@ class GraphObserver {
   /// `clang::BuiltinType::getName(this->getLangOptions())` or the builtin
   /// type constructor.
   /// \return The `NodeId` for `Spelling`.
-  virtual NodeId getNodeIdForBuiltinType(
-      const llvm::StringRef& Spelling) const = 0;
+  virtual NodeId getNodeIdForBuiltinType(llvm::StringRef Spelling) const = 0;
 
   /// \brief Returns the ID for a type node aliasing another type node.
   /// \param AliasName a `NameId` for the alias name.
@@ -353,8 +399,8 @@ class GraphObserver {
   /// \param MarkedSource marked source for the alias.
   /// \return the `NodeId` for the type alias node this definition defines.
   NodeId recordTypeAliasNode(const NameId& AliasName, const NodeId& AliasedType,
-                             const absl::optional<NodeId>& RootAliasedType,
-                             const absl::optional<MarkedSource>& MarkedSource) {
+                             const std::optional<NodeId>& RootAliasedType,
+                             const std::optional<MarkedSource>& MarkedSource) {
     return recordTypeAliasNode(nodeIdForTypeAliasNode(AliasName, AliasedType),
                                AliasedType, RootAliasedType, MarkedSource);
   }
@@ -369,8 +415,8 @@ class GraphObserver {
   /// \return the `NodeId` for the type alias node this definition defines.
   virtual NodeId recordTypeAliasNode(
       const NodeId& AliasId, const NodeId& AliasedType,
-      const absl::optional<NodeId>& RootAliasedType,
-      const absl::optional<MarkedSource>& MarkedSource) = 0;
+      const std::optional<NodeId>& RootAliasedType,
+      const std::optional<MarkedSource>& MarkedSource) = 0;
 
   /// \brief Returns the ID for a nominal type node (such as a struct,
   /// typedef or enum).
@@ -385,8 +431,8 @@ class GraphObserver {
   /// \param Parent if non-null, the parent node of this nominal type.
   /// \return the `NodeId` for the type node corresponding to `TypeName`.
   NodeId recordNominalTypeNode(const NameId& TypeName,
-                               const absl::optional<MarkedSource>& MarkedSource,
-                               const absl::optional<NodeId>& Parent) {
+                               const std::optional<MarkedSource>& MarkedSource,
+                               const std::optional<NodeId>& Parent) {
     return recordNominalTypeNode(nodeIdForNominalTypeNode(TypeName),
                                  MarkedSource, Parent);
   }
@@ -398,8 +444,8 @@ class GraphObserver {
   /// \param Parent if non-null, the parent node of this nominal type.
   /// \return the `NodeId` for the type node.
   virtual NodeId recordNominalTypeNode(
-      const NodeId& TypeNode, const absl::optional<MarkedSource>& MarkedSource,
-      const absl::optional<NodeId>& Parent) = 0;
+      const NodeId& TypeNode, const std::optional<MarkedSource>& MarkedSource,
+      const std::optional<NodeId>& Parent) = 0;
 
   /// \brief Returns a type application node ID.
   /// \note This is the elimination form for the `abs` node.
@@ -513,7 +559,7 @@ class GraphObserver {
   /// \param Node The NodeId of the record.
   /// \param MarkedSource marked source for this interface.
   virtual void recordInterfaceNode(
-      const NodeId& Node, const absl::optional<MarkedSource>& MarkedSource) {}
+      const NodeId& Node, const std::optional<MarkedSource>& MarkedSource) {}
 
   /// \brief Records a node representing a record type (such as a class or
   /// struct).
@@ -523,7 +569,7 @@ class GraphObserver {
   /// \param MarkedSource marked source for this record.
   virtual void recordRecordNode(
       const NodeId& Node, RecordKind Kind, Completeness RecordCompleteness,
-      const absl::optional<MarkedSource>& MarkedSource) {}
+      const std::optional<MarkedSource>& MarkedSource) {}
 
   /// \brief Records a node representing a function.
   /// \param Node The NodeId of the function.
@@ -533,7 +579,7 @@ class GraphObserver {
   virtual void recordFunctionNode(
       const NodeId& Node, Completeness FunctionCompleteness,
       FunctionSubkind Subkind,
-      const absl::optional<MarkedSource>& MarkedSource) {}
+      const std::optional<MarkedSource>& MarkedSource) {}
 
   /// \brief Assigns a USR to node.
   /// \param Node The target node.
@@ -542,56 +588,36 @@ class GraphObserver {
   virtual void assignUsr(const NodeId& Node, llvm::StringRef Usr,
                          int ByteSize) {}
 
+  /// \brief Assigns a link name to node.
+  /// \param node The target node.
+  /// \param name The link name for the node.
+  virtual void assignLinkName(const NodeId& node, llvm::StringRef name) {}
+
   /// \brief Describes whether an enum is scoped (`enum class`).
   enum class EnumKind {
     Scoped,   ///< This enum is scoped (an `enum class`).
     Unscoped  ///< This enum is unscoped (a plain `enum`).
   };
 
-  /// \brief Records a node representing a dependent type abstraction, like
-  /// a template.
-  ///
-  /// Abstraction nodes are used to represent the binding sites of compile-time
-  /// variables. Consider the following class template definition:
-  ///
-  /// ~~~
-  /// template <typename T> class C { T m; };
-  /// ~~~
-  ///
-  /// Here, the `GraphObserver` will be notified of a single abstraction
-  /// node. This node will have a single parameter, recorded with
-  /// `recordAbsVarNode`. The abstraction node will have a child record
-  /// node, which in turn will have a field `m` with a type that depends on
-  /// the abstraction variable parameter.
-  ///
-  /// \param Node The NodeId of the abstraction.
-  /// \sa recordAbsVarNode
-  virtual void recordAbsNode(const NodeId& Node) {}
+  /// \brief Explicitly record flattened source for some `Node`.
+  virtual void recordFlatSource(const NodeId& node, std::string_view text) {}
 
   /// \brief Explicitly record marked source for some `Node`.
   virtual void recordMarkedSource(
-      const NodeId& Node, const absl::optional<MarkedSource>& MarkedSource) {}
+      const NodeId& Node, const std::optional<MarkedSource>& MarkedSource) {}
 
   /// \brief Records a node representing a variable in a dependent type
   /// abstraction.
   /// \param Node The `NodeId` of the variable.
   /// \param MarkedSource marked source for this variable.
-  /// \sa recordAbsNode
-  virtual void recordAbsVarNode(
-      const NodeId& Node, const absl::optional<MarkedSource>& MarkedSource) {}
-
-  /// \brief Records a node representing a variable in a dependent type
-  /// abstraction.
-  /// \param Node The `NodeId` of the variable.
-  /// \param MarkedSource marked source for this variable.
-  virtual void recordTVarNode(
-      const NodeId& Node, const absl::optional<MarkedSource>& MarkedSource) {}
+  virtual void recordTVarNode(const NodeId& Node,
+                              const std::optional<MarkedSource>& MarkedSource) {
+  }
 
   /// \brief Records a node representing a deferred lookup.
   /// \param Node The `NodeId` of the lookup.
   /// \param Name The `Name` for which resolution has been deferred
-  virtual void recordLookupNode(const NodeId& Node,
-                                const llvm::StringRef& Name) {}
+  virtual void recordLookupNode(const NodeId& Node, llvm::StringRef Name) {}
 
   /// \brief Records a parameter relationship.
   /// \param `ParamOfNode` The node this `ParamNode` is the parameter of.
@@ -636,14 +662,14 @@ class GraphObserver {
   // type.
   virtual void recordVariableNode(
       const NodeId& DeclNode, Completeness Compl, VariableSubkind Subkind,
-      const absl::optional<MarkedSource>& MarkedSource) {}
+      const std::optional<MarkedSource>& MarkedSource) {}
 
   /// \brief Records that a namespace has been declared.
   /// \param DeclNode The identifier for this particular element.
   /// \param MarkedSource marked source for this namespace.
   virtual void recordNamespaceNode(
-      const NodeId& DeclNode,
-      const absl::optional<MarkedSource>& MarkedSource) {}
+      const NodeId& DeclNode, const std::optional<MarkedSource>& MarkedSource) {
+  }
 
   // TODO(zarko): recordExpandedTypeEdge -- records that a type was seen
   // to have some canonical type during a compilation. (This is a 'canonical'
@@ -656,7 +682,10 @@ class GraphObserver {
   /// identified node.
   virtual void recordFullDefinitionRange(
       const Range& SourceRange, const NodeId& DeclId,
-      const absl::optional<NodeId>& DefnId = absl::nullopt) {}
+      const std::optional<NodeId>& DefnId = std::nullopt) {}
+
+  /// \brief Should an anchor be stamped
+  enum class Stamping { Unstamped, Stamped };
 
   /// \brief Records that a particular `Range` contains the declaration
   /// of the node called `DeclId` (with possible full definition `DefnId`).
@@ -666,7 +695,8 @@ class GraphObserver {
   /// we would `recordDefinitionBindingRange` on the range for `C`.
   virtual void recordDefinitionBindingRange(
       const Range& BindingRange, const NodeId& DeclId,
-      const absl::optional<NodeId>& DefnId = absl::nullopt) {}
+      const std::optional<NodeId>& DefnId = std::nullopt,
+      Stamping stamping = Stamping::Stamped) {}
 
   /// \brief Records that a particular `Range` contains the declaration
   /// of the node called `DeclId` (with possible full definition `DefnId`).
@@ -678,7 +708,7 @@ class GraphObserver {
   /// identified node.
   virtual void recordDefinitionRangeWithBinding(
       const Range& SourceRange, const Range& BindingRange, const NodeId& DeclId,
-      const absl::optional<NodeId>& DefnId = absl::nullopt) {}
+      const std::optional<NodeId>& DefnId = std::nullopt) {}
 
   /// \brief Records that a particular string contains documentation for
   /// the node called `DocId`, possibly containing inner links to other nodes.
@@ -700,21 +730,17 @@ class GraphObserver {
     Yes
   };
 
+  /// \brief Determines whether a call will perform dynamic dispatch.
+  enum class CallDispatch {
+    /// This call may perform dynamic dispatch.
+    kDefault,
+    /// This call will not perform dynamic dispatch.
+    kDirect
+  };
+
   /// \brief Records a use site for a decl inside some documentation.
   virtual void recordDeclUseLocationInDocumentation(const Range& SourceRange,
                                                     const NodeId& DeclId) {}
-
-  /// \brief Describes how specific a completion relationship is.
-  enum class Specificity {
-    /// This relationship is the only possible relationship given its context.
-    /// For example, a class definition uniquely completes a forward declaration
-    /// in the same source file.
-    UniquelyCompletes,
-    /// This relationship is one of many possible relationships. For example, a
-    /// forward declaration in a header file may be completed by definitions in
-    /// many different source files.
-    Completes
-  };
 
   /// \brief Describes how much of a guess an edge is.
   enum class Confidence {
@@ -725,25 +751,27 @@ class GraphObserver {
     Speculative
   };
 
-  /// \brief Records that a particular `Range` contains a completion
-  /// for the node named `DefnId`.
-  /// \param SourceRange The source range containing the completion.
+  /// \brief Records that a particular `CompletingNode` completing the node
+  /// named `DefnId`.
   /// \param DefnId The `NodeId` for the node being completed.
-  /// \param Spec the specificity of the relationship beween the `Range`
-  /// and the `DefnId`.
   /// \param CompletingNode The node completing DefnId. This refers to, for
   /// example, the function definition that completes a declaration. In the case
   /// where there are multiple possible nodes, like when the function is
   /// actually a function template, pass the ID for the outer (abs) node.
-  virtual void recordCompletionRange(const Range& SourceRange,
-                                     const NodeId& DefnId, Specificity Spec,
-                                     const NodeId& CompletingNode) {}
+  virtual void recordCompletion(const NodeId& DefnId,
+                                const NodeId& CompletingNode) {}
 
   /// \brief Records the type of a node as an edge in the graph.
   /// \param TermNodeId The identifier for the node to be given a type.
   /// \param TypeNodeId The identifier for the node representing the type.
   virtual void recordTypeEdge(const NodeId& TermNodeId,
                               const NodeId& TypeNodeId) {}
+
+  /// \brief Records the type of a node's initializer as an edge in the graph.
+  /// \param TermNodeId The identifier for the node to be given a type.
+  /// \param TypeNodeId The identifier for the node representing the type.
+  virtual void recordInitTypeEdge(const NodeId& TermNodeId,
+                                  const NodeId& TypeNodeId) {}
 
   /// \brief Records that `Influencer` influences `Influenced`.
   virtual void recordInfluences(const NodeId& Influencer,
@@ -806,21 +834,42 @@ class GraphObserver {
   /// for example, a function.
   /// \param CalleeId The node being called.
   /// \param I Whether this call is implicit.
+  /// \param D Whether this call is direct.
   virtual void recordCallEdge(const Range& SourceRange, const NodeId& CallerId,
-                              const NodeId& CalleeId, Implicit I) {}
+                              const NodeId& CalleeId, Implicit I,
+                              CallDispatch D = CallDispatch::kDefault) {}
 
   /// \brief Creates a node to represent a file-level initialization routine
   /// that can be blamed for a call at `CallSite`.
   /// \param CallSite The call site that needs a routine to blame.
   /// \return The `NodeId` for the routine to blame.
-  virtual absl::optional<NodeId> recordFileInitializer(const Range& CallSite) {
-    return absl::nullopt;
+  virtual std::optional<NodeId> recordFileInitializer(const Range& CallSite) {
+    return std::nullopt;
   }
+
+  /// \brief Records a denotes relationship as an edge in the graph.
+  /// \param DenoterId The identifier for the denoting node (i.e., the
+  /// concrete representation)
+  /// \param DenoteeId The identifier for the node being denoted (i.e.,
+  /// the abstract representation)
+  virtual void recordDenotesEdge(const NodeId& DenoterId,
+                                 const NodeId& DenoteeId) {}
+
+  /// \brief Records a named relationship as an edge in the graph.
+  /// \param NamedId The identifier for the named node
+  /// \param NameId The identifier for the name node
+  virtual void recordNamedEdge(const NodeId& NamedId, const NodeId& NameId) {}
 
   /// \brief Records a child-to-parent relationship as an edge in the graph.
   /// \param ChildNodeId The identifier for the child node.
   /// \param ParentNodeId The identifier for the parent node.
   virtual void recordChildOfEdge(const NodeId& ChildNodeId,
+                                 const NodeId& ParentNodeId) {}
+
+  /// \brief Records a child-to-parent relationship as an edge in the graph.
+  /// \param SourceRange The source range for the child anchor.
+  /// \param ParentNodeId The identifier for the parent node.
+  virtual void recordChildOfEdge(const Range& SourceRange,
                                  const NodeId& ParentNodeId) {}
 
   /// \brief Records that a record adds functionality to another record. In the
@@ -845,9 +894,8 @@ class GraphObserver {
   /// \param Id The ID of the node to record.
   /// \param NodeKind The kind of the node ("google/protobuf")
   /// \param Compl Whether this node is complete.
-  virtual void recordUserDefinedNode(const NodeId& Id,
-                                     const llvm::StringRef& NodeKind,
-                                     Completeness Compl) {}
+  virtual void recordUserDefinedNode(const NodeId& Id, llvm::StringRef NodeKind,
+                                     const std::optional<Completeness> Compl) {}
 
   /// \brief Records a use site for some decl.
   virtual void recordDeclUseLocation(const Range& SourceRange,
@@ -938,17 +986,28 @@ class GraphObserver {
   /// \param SourceRange The `Range` covering the text causing the inclusion.
   /// \param File The resource being included.
   virtual void recordIncludesRange(const Range& SourceRange,
-                                   const clang::FileEntry* File) {}
+                                   clang::FileEntryRef File) {}
 
   /// \brief Records that the specified variable is static.
   /// \param VarNodeId The `NodeId` of the static variable.
   virtual void recordStaticVariable(const NodeId& VarNodeId) {}
 
+  /// \brief Records the visibility of the specified field.
+  /// \param FieldNodeId The `NodeId` of the field.
+  virtual void recordVisibility(const NodeId& FieldNodeId,
+                                clang::AccessSpecifier access) {}
+
   /// \brief Records that the specified node is deprecated.
   /// \param NodeId The `NodeId` of the deprecated node.
   /// \param Advice A user-readable message about the deprecation (or empty).
-  virtual void recordDeprecated(const NodeId& NodeId,
-                                const llvm::StringRef& Advice) {}
+  virtual void recordDeprecated(const NodeId& NodeId, llvm::StringRef Advice) {}
+
+  /// \brief Records a diagnostic at the given source range
+  /// \param Range The source range
+  /// \param Signature The signature to use for the diagnostic VName
+  /// \param Message The diagnostic message
+  virtual void recordDiagnostic(const Range& Range, llvm::StringRef Signature,
+                                llvm::StringRef Message) {}
 
   /// \brief Called when a new input file is entered.
   ///
@@ -981,7 +1040,7 @@ class GraphObserver {
   /// source file to the given stream.
   /// \pre Preprocessing is complete.
   virtual void AppendMainSourceFileIdentifierToStream(
-      llvm::raw_ostream& Ostream) {}
+      llvm::raw_ostream& Ostream) const {}
 
   /// \brief Checks whether this `GraphObserver` should emit data for some
   /// `NodeId` and its descendants.
@@ -1069,7 +1128,7 @@ class GraphObserver {
 
   /// \brief Append a string representation of `Range` to `Ostream`.
   virtual void AppendRangeToStream(llvm::raw_ostream& Ostream,
-                                   const Range& Range) {
+                                   const Range& Range) const {
     Range.PhysicalRange.getBegin().print(Ostream, *SourceManager);
     Ostream << "@";
     Range.PhysicalRange.getEnd().print(Ostream, *SourceManager);
@@ -1093,11 +1152,11 @@ class GraphObserver {
     return {};
   }
 
-  virtual ~GraphObserver() = 0;
+  virtual ~GraphObserver() = default;
 
   clang::SourceManager* getSourceManager() const { return SourceManager; }
 
-  clang::LangOptions* getLangOptions() const { return LangOptions; }
+  const clang::LangOptions* getLangOptions() const { return LangOptions; }
 
   clang::Preprocessor* getPreprocessor() const { return Preprocessor; }
 
@@ -1116,12 +1175,11 @@ class GraphObserver {
 
  protected:
   clang::SourceManager* SourceManager = nullptr;
-  clang::LangOptions* LangOptions = nullptr;
+  const clang::LangOptions* LangOptions = nullptr;
   clang::Preprocessor* Preprocessor = nullptr;
   ProfilingCallback ReportProfileEvent = [](const char*, ProfilingEvent) {};
+  HashRecorder* hash_recorder_ = nullptr;
 };
-
-inline GraphObserver::~GraphObserver() {}
 
 /// \brief A GraphObserver that does nothing.
 class NullGraphObserver : public GraphObserver {
@@ -1132,7 +1190,7 @@ class NullGraphObserver : public GraphObserver {
     std::string StampIdentity(const std::string& Identity) const override {
       return Identity;
     }
-    void* GetClass() const override { return &NullClaimTokenClass; }
+    uintptr_t GetClass() const override { return kNullClaimTokenClass; }
     bool operator==(const ClaimToken& RHS) const override {
       return RHS.GetClass() == GetClass();
     }
@@ -1141,38 +1199,38 @@ class NullGraphObserver : public GraphObserver {
     }
 
    private:
-    static void* NullClaimTokenClass;
+    static inline const uintptr_t kNullClaimTokenClass =
+        reinterpret_cast<uintptr_t>(&kNullClaimTokenClass);
   };
 
-  NodeId getNodeIdForBuiltinType(
-      const llvm::StringRef& Spelling) const override {
-    return NodeId(getDefaultClaimToken(), "");
+  NodeId getNodeIdForBuiltinType(llvm::StringRef Spelling) const override {
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   NodeId nodeIdForTypeAliasNode(const NameId& AliasName,
                                 const NodeId& AliasedType) const override {
-    return NodeId(getDefaultClaimToken(), "");
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   NodeId recordTypeAliasNode(
       const NodeId& AliasId, const NodeId& AliasedType,
-      const absl::optional<NodeId>& RootAliasedType,
-      const absl::optional<MarkedSource>& MarkedSource) override {
-    return NodeId(getDefaultClaimToken(), "");
+      const std::optional<NodeId>& RootAliasedType,
+      const std::optional<MarkedSource>& MarkedSource) override {
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   NodeId nodeIdForNominalTypeNode(const NameId& type_name) const override {
-    return NodeId(getDefaultClaimToken(), "");
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   NodeId recordNominalTypeNode(const NodeId& TypeNode,
-                               const absl::optional<MarkedSource>& MarkedSource,
-                               const absl::optional<NodeId>& Parent) override {
-    return NodeId(getDefaultClaimToken(), "");
+                               const std::optional<MarkedSource>& MarkedSource,
+                               const std::optional<NodeId>& Parent) override {
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   NodeId nodeIdForTsigmaNode(absl::Span<const NodeId> Params) const override {
-    return NodeId(getDefaultClaimToken(), "");
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   NodeId recordTsigmaNode(const NodeId& TsigmaId,
@@ -1182,13 +1240,13 @@ class NullGraphObserver : public GraphObserver {
 
   NodeId nodeIdForTappNode(const NodeId& TyconId,
                            absl::Span<const NodeId> Params) const override {
-    return NodeId(getDefaultClaimToken(), "");
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   NodeId recordTappNode(const NodeId& TappId, const NodeId& TyconId,
                         absl::Span<const NodeId> Params,
                         unsigned FirstDefaultParam) override {
-    return NodeId(getDefaultClaimToken(), "");
+    return NodeId::CreateUncompressed(getDefaultClaimToken(), "");
   }
 
   const ClaimToken* getDefaultClaimToken() const override {
@@ -1252,21 +1310,21 @@ inline bool operator!=(const GraphObserver::Range& L,
   return !(L == R);
 }
 
-// 64 characters that can appear in identifiers (plus $ from Java).
-static constexpr char kSafeEncodingCharacters[] =
-    "abcdefghijklmnopqrstuvwxyz012345"
-    "6789_$ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-static constexpr size_t kBitsPerCharacter = 6;
-static_assert((1 << kBitsPerCharacter) == sizeof(kSafeEncodingCharacters) - 1,
-              "The alphabet is big enough");
-
 /// Returns a compact string representation of the `Hash`.
-static inline std::string HashToString(size_t Hash) {
+inline std::string HashToString(size_t Hash) {
+  // 64 characters that can appear in identifiers (plus $ from Java).
+  static constexpr char kSafeEncodingCharacters[] =
+      "abcdefghijklmnopqrstuvwxyz012345"
+      "6789_$ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+  static constexpr size_t kBitsPerCharacter = 6;
+  static_assert((1 << kBitsPerCharacter) == sizeof(kSafeEncodingCharacters) - 1,
+                "The alphabet is big enough");
+
   if (!Hash) {
     return "";
   }
-  int SetBit = sizeof(Hash) * CHAR_BIT - llvm::countLeadingZeros(Hash);
+  int SetBit = llvm::bit_width(Hash);
   size_t Pos = (SetBit + kBitsPerCharacter - 1) / kBitsPerCharacter;
   std::string HashOut(Pos, kSafeEncodingCharacters[0]);
   while (Hash) {

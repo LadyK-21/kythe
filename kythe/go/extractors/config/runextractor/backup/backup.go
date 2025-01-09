@@ -19,21 +19,22 @@
 //
 // Example usage:
 //
-//    tmp, err := backup.Save(someFile)
-//    if err != nil {
-//       return fmt.Errorf("backing up %q: %v", somePath, err)
-//    }
-//    defer tmp.Release()
-//    // ... do real work ...
-//    tmp.Restore()
+//	tmp, err := backup.Save(someFile)
+//	if err != nil {
+//	   return fmt.Errorf("backing up %q: %v", somePath, err)
+//	}
+//	defer tmp.Release()
+//	// ... do real work ...
+//	tmp.Restore()
 package backup // import "kythe.io/kythe/go/extractors/config/runextractor/backup"
 
 import (
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
+
+	"kythe.io/kythe/go/util/log"
 
 	"github.com/google/go-cmp/cmp"
 )
@@ -84,7 +85,7 @@ func (f *File) Restore() error {
 func (f *File) Release() {
 	if f.tmp != "" {
 		if err := os.Remove(f.tmp); err != nil {
-			log.Printf("Warning: removing backup of %q failed: %v", f.orig, err)
+			log.Warningf("removing backup of %q failed: %v", f.orig, err)
 		}
 	}
 }

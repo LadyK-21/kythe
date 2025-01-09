@@ -18,20 +18,21 @@
 // graph.Service.
 //
 // Table format:
-//   edgeSets:<ticket>      -> srvpb.PagedEdgeSet
-//   edgePages:<page_key>   -> srvpb.EdgePage
+//
+//	edgeSets:<ticket>      -> srvpb.PagedEdgeSet
+//	edgePages:<page_key>   -> srvpb.EdgePage
 package graph // import "kythe.io/kythe/go/serving/graph"
 
 import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 
 	"kythe.io/kythe/go/services/xrefs"
 	"kythe.io/kythe/go/storage/table"
+	"kythe.io/kythe/go/util/log"
 
 	"bitbucket.org/creachadair/stringset"
 	"golang.org/x/net/trace"
@@ -43,7 +44,7 @@ import (
 	srvpb "kythe.io/kythe/proto/serving_go_proto"
 )
 
-func tracePrintf(ctx context.Context, msg string, args ...interface{}) {
+func tracePrintf(ctx context.Context, msg string, args ...any) {
 	if t, ok := trace.FromContext(ctx); ok {
 		t.LazyPrintf(msg, args...)
 	}
@@ -96,7 +97,7 @@ func lookupPagedEdgeSets(ctx context.Context, tbl table.Proto, keys [][]byte) (<
 		for _, key := range keys {
 			var pes srvpb.PagedEdgeSet
 			if err := tbl.Lookup(ctx, key, &pes); err == table.ErrNoSuchKey {
-				log.Printf("Could not locate edges with key %q", key)
+				log.WarningContextf(ctx, "Could not locate edges with key %q", key)
 				ch <- edgeSetResult{Err: err}
 				continue
 			} else if err != nil {
@@ -298,11 +299,11 @@ func (t *Table) edges(ctx context.Context, req edgesRequest) (*gpb.EdgesReply, e
 			for _, idx := range pes.PageIndex {
 				if req.Kinds == nil || req.Kinds(idx.EdgeKind) {
 					if stats.skipPage(idx) {
-						log.Printf("Skipping EdgePage: %s", idx.PageKey)
+						log.WarningContextf(ctx, "Skipping EdgePage: %s", idx.PageKey)
 						continue
 					}
 
-					log.Printf("Retrieving EdgePage: %s", idx.PageKey)
+					log.InfoContextf(ctx, "Retrieving EdgePage: %s", idx.PageKey)
 					ep, err := t.edgePage(ctx, idx.PageKey)
 					if err == table.ErrNoSuchKey {
 						return nil, fmt.Errorf("internal error: missing edge page: %q", idx.PageKey)
@@ -342,9 +343,9 @@ func (t *Table) edges(ctx context.Context, req edgesRequest) (*gpb.EdgesReply, e
 	}
 	totalEdgesPossible := int(sumEdgeKinds(reply.TotalEdgesByKind))
 	if stats.total > stats.max {
-		log.Panicf("totalEdges greater than maxEdges: %d > %d", stats.total, stats.max)
+		panic(fmt.Sprintf("totalEdges greater than maxEdges: %d > %d", stats.total, stats.max))
 	} else if pageToken+stats.total > totalEdgesPossible && pageToken <= totalEdgesPossible {
-		log.Panicf("pageToken+totalEdges greater than totalEdgesPossible: %d+%d > %d", pageToken, stats.total, totalEdgesPossible)
+		panic(fmt.Sprintf("pageToken+totalEdges greater than totalEdgesPossible: %d+%d > %d", pageToken, stats.total, totalEdgesPossible))
 	}
 
 	if pageToken+stats.total != totalEdgesPossible && stats.total != 0 {

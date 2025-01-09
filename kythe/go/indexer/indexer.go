@@ -18,19 +18,18 @@
 //
 // Usage example: Indexing a Kythe CompilationUnit message.
 //
-//   // Obtain a compilation from some source, e.g., an kzip.
-//   var unit *apb.CompilationUnit = ...
+//	// Obtain a compilation from some source, e.g., an kzip.
+//	var unit *apb.CompilationUnit = ...
 //
-//   // Parse the sources and resolve types.
-//   pi, err := indexer.Resolve(unit, pack, &indexer.ResolveOptions{
-//     Info: indexer.AllTypeInfo(),
-//   })
-//   if err != nil {
-//     log.Fatal("Resolving failed: %v", err)
-//   }
-//   // Type information from http://godoc.org/go/types is now available
-//   // from pi.Info, which is a *types.Info record.
-//
+//	// Parse the sources and resolve types.
+//	pi, err := indexer.Resolve(unit, pack, &indexer.ResolveOptions{
+//	  Info: indexer.AllTypeInfo(),
+//	})
+//	if err != nil {
+//	  log.Fatal("Resolving failed: %v", err)
+//	}
+//	// Type information from http://godoc.org/go/types is now available
+//	// from pi.Info, which is a *types.Info record.
 package indexer // import "kythe.io/kythe/go/indexer"
 
 import (
@@ -45,12 +44,12 @@ import (
 	"go/types"
 	"io"
 	"io/ioutil"
-	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"kythe.io/kythe/go/extractors/govname"
+	"kythe.io/kythe/go/util/log"
 	"kythe.io/kythe/go/util/metadata"
 	"kythe.io/kythe/go/util/ptypes"
 	"kythe.io/kythe/go/util/schema/edges"
@@ -136,7 +135,7 @@ type PackageInfo struct {
 
 type funcInfo struct {
 	vname    *spb.VName
-	numAnons int // number of anonymous functions defined inside this one
+	numAnons int // number of anonymous params/functions defined inside this one
 }
 
 // packageImporter implements the types.Importer interface by fetching files
@@ -282,7 +281,7 @@ func Resolve(unit *apb.CompilationUnit, f Fetcher, opts *ResolveOptions) (*Packa
 				return nil, fmt.Errorf("fetching %q (%s): %v", fpath, ri.Info.Digest, err)
 			}
 			if !matchesBuildTags(fpath, data, bc) {
-				log.Printf("Skipped source file %q because build tags do not match", fpath)
+				log.Infof("Skipped source file %q because build tags do not match", fpath)
 				continue
 			}
 			vpath := ri.VName.GetPath()
@@ -318,7 +317,7 @@ func Resolve(unit *apb.CompilationUnit, f Fetcher, opts *ResolveOptions) (*Packa
 				encodedMetadata := strings.TrimPrefix(lastComment, delimiter)
 				newRule, err := loadInlineMetadata(ri, encodedMetadata)
 				if err != nil {
-					log.Printf("Error loading metadata in %q: %v", ri.Info.GetPath(), err)
+					log.Errorf("loading metadata in %q: %v", ri.Info.GetPath(), err)
 				} else {
 					rules = append(rules, newRule)
 				}
@@ -328,9 +327,9 @@ func Resolve(unit *apb.CompilationUnit, f Fetcher, opts *ResolveOptions) (*Packa
 
 		// Check for mapping metadata.
 		if rs, err := opts.checkRules(ri, f); err != nil {
-			log.Printf("Error checking rules in %q: %v", fpath, err)
+			log.Errorf("checking rules in %q: %v", fpath, err)
 		} else if rs != nil {
-			log.Printf("Found %d metadata rules for path %q", len(rs.Rules), rs.Path)
+			log.Infof("Found %d metadata rules for path %q", len(rs.Rules), rs.Path)
 			rules = append(rules, rs)
 			continue
 		}
@@ -487,7 +486,7 @@ func (pi *PackageInfo) ObjectVName(obj types.Object) *spb.VName {
 	if base := pi.PackageVName[pkg]; base != nil {
 		vname = proto.Clone(base).(*spb.VName)
 	} else if pkg == nil {
-		return govname.ForBuiltin(sig)
+		return govname.Builtin(obj.Name())
 	} else {
 		// This is an indirect import, that is, a name imported but not
 		// mentioned explicitly by the package being indexed.
@@ -625,13 +624,13 @@ func (pi *PackageInfo) newSignature(obj types.Object) (tag, base string) {
 		return tagLabel, pi.anonSignature(t)
 
 	default:
-		log.Panicf("Unexpected object kind: %T", obj)
+		panic(fmt.Sprintf("Unexpected object kind: %T", obj))
 	}
 
 	// At this point, we have eliminated built-in objects; everything else must
 	// be defined in a package.
 	if obj.Pkg() == nil {
-		log.Panic("Object without a package: ", obj)
+		panic(fmt.Sprintf("Object without a package: %v", obj))
 	}
 
 	// Objects at package scope (i.e., parent scope is package scope).
@@ -672,16 +671,16 @@ func (pi *PackageInfo) anonSignature(obj types.Object) string {
 // to types T and U, even though according the syntax, it belongs primarily to
 // T in the first example and U in the second:
 //
-//      type T struct {X int}
-//      type U T
+//	type T struct {X int}
+//	type U T
 //
-//      type T U
-//      type U struct {X int}
+//	type T U
+//	type U struct {X int}
 //
 // Similarly:
 //
-//      type U struct {X int}
-//      type V struct {U}
+//	type U struct {X int}
+//	type V struct {U}
 //
 // TODO(adonovan): sameer@ points out a useful heuristic: in a case of struct
 // or interface embedding, if one struct/interface has fewer fields/methods,
@@ -691,17 +690,17 @@ func (pi *PackageInfo) anonSignature(obj types.Object) string {
 // from outside the package but for which we can't easily come up with good
 // names.  Here are some examples:
 //
-//      // package p
-//      var V1, V2 struct {X int} = ...
-//      func F() struct{X int} {...}
-//      type T struct {
-//              Y struct { X int }
-//      }
+//	// package p
+//	var V1, V2 struct {X int} = ...
+//	func F() struct{X int} {...}
+//	type T struct {
+//	        Y struct { X int }
+//	}
 //
-//      // main
-//      p.V2.X = 1
-//      print(p.F().X)
-//      new(p.T).Y[0].X
+//	// main
+//	p.V2.X = 1
+//	print(p.F().X)
+//	new(p.T).Y[0].X
 //
 // Also note that there may be arbitrary pointer, struct, chan, map, array, and
 // slice type constructors between the type of the exported package member (V2,
@@ -921,11 +920,12 @@ func loadInlineMetadata(fi *apb.CompilationUnit_FileInput, encodedMetadata strin
 
 	rules := make(metadata.Rules, 0, len(gci.GetMeta()))
 	for _, r := range gci.GetMeta() {
+		k, rev := strings.CutPrefix(r.Edge, "%")
 		rules = append(rules, metadata.Rule{
 			EdgeIn:  edges.DefinesBinding,
-			EdgeOut: edges.Generates,
+			EdgeOut: k,
 			VName:   r.GetVname(),
-			Reverse: true,
+			Reverse: rev,
 			Begin:   int(r.GetBegin()),
 			End:     int(r.GetEnd()),
 		})

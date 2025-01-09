@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+load("@rules_java//java:defs.bzl", "JavaInfo", "java_common")
+load("@rules_java//java:java_utils.bzl", _java_utils = "utils")
 
 _mnemonic = "Javac"
 
@@ -34,12 +36,17 @@ def _extract_java(target, ctx):
     compilation = info.compilation_info
     annotations = info.annotation_processing
 
+    # compilation.javac_options may be a depset
+    javac_options = _java_utils.tokenize_javacopts(ctx, compilation.javac_options)
+
     source_files = []
     for src in ctx.rule.files.srcs:
         source_files.append(src.path)
 
     classpath = [j.path for j in compilation.compilation_classpath.to_list()]
-    bootclasspath = [j.path for j in compilation.boot_classpath]
+    bootclasspath = []
+    if compilation.boot_classpath:
+        bootclasspath = [j.path for j in compilation.boot_classpath]
 
     processorpath = []
     processors = []
@@ -59,7 +66,7 @@ def _extract_java(target, ctx):
             outputjar = output_jar,
             classpath = classpath,
             source_file = source_files,
-            javac_opt = compilation.javac_options,
+            javac_opt = javac_options,
             processor = processors,
             processorpath = processorpath,
             bootclasspath = bootclasspath,
@@ -68,7 +75,7 @@ def _extract_java(target, ctx):
     text_xa = ctx.actions.declare_file(ctx.label.name + ".xa.textproto")
     ctx.actions.write(
         output = text_xa,
-        content = xa.to_proto(),
+        content = proto.encode_text(xa),
     )
 
     xa = ctx.actions.declare_file(ctx.label.name + ".xa")
@@ -79,6 +86,7 @@ def _extract_java(target, ctx):
         inputs = [text_xa],
         arguments = [xa_args],
         executable = ctx.executable._write_extra_action,
+        toolchain = None,
     )
 
     extract_args = ctx.actions.args()
@@ -90,6 +98,7 @@ def _extract_java(target, ctx):
         executable = ctx.executable._java_bazel_extractor,
         arguments = [extract_args],
         tools = ctx.attr._java_runtime[java_common.JavaRuntimeInfo].files,
+        toolchain = None,
     )
 
     return kzip
@@ -119,7 +128,7 @@ extract_java_aspect = aspect(
             allow_single_file = True,
         ),
         "_java_runtime": attr.label(
-            default = Label("@bazel_tools//tools/jdk:current_java_runtime"),
+            default = Label("@rules_java//toolchains:current_java_runtime"),
             cfg = "exec",
             allow_files = True,
         ),

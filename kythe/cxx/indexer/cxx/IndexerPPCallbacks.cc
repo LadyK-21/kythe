@@ -19,13 +19,14 @@
 #include "IndexerPPCallbacks.h"
 
 #include "GraphObserver.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/strings/str_format.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Index/USRGeneration.h"
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
-#include "glog/logging.h"
 #include "kythe/cxx/extractor/path_utils.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -47,9 +48,8 @@
 namespace kythe {
 
 IndexerPPCallbacks::IndexerPPCallbacks(clang::Preprocessor& PP,
-                                       GraphObserver& GO, enum Verbosity V,
-                                       int UsrByteSize)
-    : Preprocessor(PP), Observer(GO), Verbosity(V), UsrByteSize(UsrByteSize) {
+                                       GraphObserver& GO, int UsrByteSize)
+    : Preprocessor(PP), Observer(GO), UsrByteSize(UsrByteSize) {
   class MetadataPragmaHandlerWrapper : public clang::PragmaHandler {
    public:
     MetadataPragmaHandlerWrapper(IndexerPPCallbacks* context)
@@ -191,23 +191,21 @@ void IndexerPPCallbacks::MacroExpands(const clang::Token& Token,
   const clang::MacroInfo& Info = *Macro.getMacroInfo();
   GraphObserver::NodeId MacroId = BuildNodeIdForMacro(Token, Info);
   if (!Range.getBegin().isFileID() || !Range.getEnd().isFileID()) {
-    if (Verbosity) {
-      auto NewBegin =
-          Observer.getSourceManager()->getExpansionLoc(Range.getBegin());
-      if (!NewBegin.isFileID()) {
-        return;
-      }
-      Range = clang::SourceRange(
-          NewBegin,
-          clang::Lexer::getLocForEndOfToken(
-              NewBegin, 0, /* offset from token end */
-              *Observer.getSourceManager(), *Observer.getLangOptions()));
-      if (Range.isInvalid()) {
-        return;
-      }
-      Observer.recordIndirectlyExpandsRange(RangeInCurrentContext(Range),
-                                            MacroId);
+    auto NewBegin =
+        Observer.getSourceManager()->getExpansionLoc(Range.getBegin());
+    if (!NewBegin.isFileID()) {
+      return;
     }
+    Range = clang::SourceRange(
+        NewBegin,
+        clang::Lexer::getLocForEndOfToken(
+            NewBegin, 0, /* offset from token end */
+            *Observer.getSourceManager(), *Observer.getLangOptions()));
+    if (Range.isInvalid()) {
+      return;
+    }
+    Observer.recordIndirectlyExpandsRange(RangeInCurrentContext(Range),
+                                          MacroId);
   } else {
     Observer.recordExpandsRange(RangeForTokenInCurrentContext(Token), MacroId);
   }
@@ -240,16 +238,15 @@ void IndexerPPCallbacks::Ifndef(clang::SourceLocation Location,
 void IndexerPPCallbacks::InclusionDirective(
     clang::SourceLocation HashLocation, const clang::Token& IncludeToken,
     llvm::StringRef Filename, bool IsAngled,
-    clang::CharSourceRange FilenameRange,
-    llvm::Optional<clang::FileEntryRef> FileRef, llvm::StringRef SearchPath,
-    llvm::StringRef RelativePath, const clang::Module* Imported,
+    clang::CharSourceRange FilenameRange, clang::OptionalFileEntryRef FileRef,
+    llvm::StringRef SearchPath, llvm::StringRef RelativePath,
+    const clang::Module* Imported, bool is_module_imported,
     clang::SrcMgr::CharacteristicKind FileType) {
   // TODO(zarko) (Modules): Check if `Imported` is non-null; if so, this
   // was transformed to a module import.
   if (FileRef) {
     Observer.recordIncludesRange(
-        RangeInCurrentContext(FilenameRange.getAsRange()),
-        &FileRef->getFileEntry());
+        RangeInCurrentContext(FilenameRange.getAsRange()), *FileRef);
   }
   LastInclusionHash = HashLocation;
 }
@@ -326,8 +323,8 @@ GraphObserver::NodeId IndexerPPCallbacks::BuildNodeIdForMacro(
     // cases should contain canonical source file information).
     Ostream << "@" << SM.getFileOffset(Loc);
   }
-  return GraphObserver::NodeId(Observer.getClaimTokenForLocation(Loc),
-                               Ostream.str());
+  return Observer.MakeNodeId(Observer.getClaimTokenForLocation(Loc),
+                             Ostream.str());
 }
 
 void IndexerPPCallbacks::HandleKytheMetadataPragma(
@@ -336,7 +333,7 @@ void IndexerPPCallbacks::HandleKytheMetadataPragma(
   llvm::SmallString<1024> search_path;
   llvm::SmallString<1024> relative_path;
   llvm::SmallString<1024> filename;
-  const auto* file = cxx_extractor::LookupFileForIncludePragma(
+  clang::OptionalFileEntryRef file = cxx_extractor::LookupFileForIncludePragma(
       &preprocessor, &search_path, &relative_path, &filename);
   if (!file) {
     absl::FPrintF(stderr, "Missing metadata file: %s\n",
@@ -345,14 +342,14 @@ void IndexerPPCallbacks::HandleKytheMetadataPragma(
   }
   clang::FileID pragma_file_id =
       Observer.getSourceManager()->getFileID(FirstToken.getLocation());
-  const auto* target =
-      Observer.getSourceManager()->getFileEntryForID(pragma_file_id);
-  if (target == nullptr) {
+  const clang::OptionalFileEntryRef target =
+      Observer.getSourceManager()->getFileEntryRefForID(pragma_file_id);
+  if (!target) {
     LOG(WARNING) << "Missing target file entry for kythe_metadata";
     return;
   }
   if (!pragma_file_id.isInvalid()) {
-    Observer.applyMetadataFile(pragma_file_id, file, "", target);
+    Observer.applyMetadataFile(pragma_file_id, *file, "", *target);
   } else {
     absl::FPrintF(stderr, "Metadata pragma was in an impossible place\n");
   }
@@ -377,14 +374,14 @@ void IndexerPPCallbacks::HandleKytheInlineMetadataPragma(
     LOG(WARNING) << "Invalid file ID for kythe_inline_metadata";
     return;
   }
-  const clang::FileEntry* pragma_file_entry =
-      Observer.getSourceManager()->getFileEntryForID(pragma_file_id);
-  if (pragma_file_entry == nullptr) {
+  const clang::OptionalFileEntryRef pragma_file_entry =
+      Observer.getSourceManager()->getFileEntryRefForID(pragma_file_id);
+  if (!pragma_file_entry) {
     LOG(WARNING) << "Missing file entry for kythe_inline_metadata";
     return;
   }
-  Observer.applyMetadataFile(pragma_file_id, pragma_file_entry, search_string,
-                             pragma_file_entry);
+  Observer.applyMetadataFile(pragma_file_id, *pragma_file_entry, search_string,
+                             *pragma_file_entry);
 }
 
 }  // namespace kythe
